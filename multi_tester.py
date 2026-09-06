@@ -42,7 +42,7 @@ SOURCES = [
 XRAY_PATH = "./xray/xray.exe"
 LOCAL_PORT_START = 10800
 OUTPUT_FILENAME = "fast_vless.txt"
-MAX_THREADS = 150
+MAX_THREADS = 300
 
 GIT_BRANCH = "main"
 COMMIT_MESSAGE = "Auto-update: 60 fast configs"
@@ -312,7 +312,7 @@ def test_single_proxy(link, task_index, thread_id):
         )
         end_time = time.time()
 
-        if response.status_code == 200:
+        if response.status_code in (200, 204):
             ping_result = round((end_time - start_time) * 1000)
 
     except requests.exceptions.RequestException:
