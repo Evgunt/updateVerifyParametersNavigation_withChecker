@@ -1,2 +1,2 @@
 vless://e4514801-0d5a-42ba-869f-39bd605aef9e@15.188.177.61:22222?encryption=none&amp;security=none&amp;type=tcp#(S104)
-vless://4cbefb4d-328c-411d-bf76-780df1082df8@31.76.89.110:8443?encryption=none&type=xhttp&mode=auto&host=wikihow.com&path=%2F&security=reality&fp=firefox&pbk=p9ISfhV0uZpKSgrK_8R6Mm4A01tWdzpKMlFR2TIj81s&sni=wikihow.com#[🇫🇮]
+vless://e4514801-0d5a-42ba-869f-39bd605aef9e@15.188.177.61:22222?encryption=none&security=none&type=tcp#(S104)🇨🇵t.me/PrivateVPNs
