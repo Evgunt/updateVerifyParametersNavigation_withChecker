@@ -11,7 +11,8 @@ import requests
 SOURCES = [
     "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-CIDR-RU-all.txt",
     "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/BLACK_VLESS_RUS.txt",
-    "https://raw.githubusercontent.com/kort0881/vpn-vless-configs-russia/refs/heads/main/output/vless.txt",
+    "https://raw.githubusercontent.com/kort0881/vpn-vless-configs-russia/refs/heads/main/data/githubmirror/clean/vless.txt",
+    "https://raw.githubusercontent.com/kort0881/vpn-vless-configs-russia/refs/heads/main/data/githubmirror/clean/trojan.txt",
     "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/1.txt",
     "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/2.txt",
     "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/3.txt",
@@ -38,21 +39,17 @@ SOURCES = [
     "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/24.txt",
     "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/25.txt",
 ]
-
-XRAY_PATH = "./xray/xray.exe"  # Используется скачанный файл
-LOCAL_PORT_START = 10800  # Каждый поток получит свой порт во избежание конфликтов
+XRAY_PATH = "./xray/xray.exe"
+LOCAL_PORT_START = 10800
 OUTPUT_FILENAME = "fast_vless.txt"
-MAX_THREADS = 150  # Количество одновременно проверяемых прокси
+MAX_THREADS = 150
 
-# ==================== НАСТРОЙКИ GIT ====================
 GIT_BRANCH = "main"
-COMMIT_MESSAGE = "Auto-update: 60 fast VLESS configs"
-
-# Скрипт автоматически определяет папку, в которой он лежит на компьютере
+COMMIT_MESSAGE = "Auto-update: 60 fast configs"
 REPO_PATH = os.path.dirname(os.path.abspath(__file__))
 
+
 def run_git_command(args):
-    """Безопасный запуск команд Git с логированием ошибок"""
     try:
         result = subprocess.run(
             args,
@@ -60,27 +57,28 @@ def run_git_command(args):
             capture_output=True,
             text=True,
             check=True,
-            encoding='utf-8'
+            encoding="utf-8",
         )
         print(result.stdout.strip())
         return True
     except subprocess.CalledProcessError as e:
         print(f"Ошибка Git при выполнении {' '.join(args)}:")
-        print(f"Код возврата: {e.returncode}")
         print(f"Ошибка: {e.stderr.strip()}")
         return False
 
 
 def push_to_git():
-    """Процесс синхронизации с GitHub"""
     print("\n--- Запуск синхронизации с Git ---")
-
     if not run_git_command(["git", "add", OUTPUT_FILENAME]):
         return
-
     try:
-        status = subprocess.run(["git", "status", "--porcelain"], cwd=REPO_PATH, capture_output=True, text=True,
-                                check=True)
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=REPO_PATH,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
         if not status.stdout.strip():
             print("Изменений в файле нет, Git push отменен.")
             return
@@ -97,122 +95,199 @@ def push_to_git():
 
 
 def fetch_and_filter_links(sources):
-    """Скачивает списки, находит все vless:// через regex и фильтрует их."""
     valid_links = set()
     print("[*] Скачивание конфигураций из источников...")
+
+    pattern = r"((?:vless|ss|hysteria|hy2|hysteria2|trojan)://[^\s'\"<>]+)"
 
     for url in sources:
         try:
             response = requests.get(url, timeout=10)
             if response.status_code != 200:
-                print(f"  - [Ошибка] Код {response.status_code}: {url.split('/')[-1]}")
                 continue
 
-            # Ищем абсолютно все vless:// ссылки в тексте, игнорируя любые символы разметки
-            found_links = re.findall(r'(vless://[^\s\'"]+)', response.text)
-            print(f"  - Найдено сырых ссылок в {url.split('/')[-1]}: {len(found_links)}")
+            found_links = re.findall(pattern, response.text)
+            print(
+                f"  - Найдено сырых ссылок в {url.split('/')[-1]}: {len(found_links)}"
+            )
 
             for link in found_links:
                 link = link.strip()
-
-                # --- Ваши условия фильтрации ---
-                if not link or link.startswith('#'):
-                    continue
-                if not link.startswith('vless://'):
+                if not link or link.startswith("#"):
                     continue
 
                 link_lower = link.lower()
-                if "russia" in link_lower or "united states" in link_lower or "ukraine" in link_lower:
+                allowed_protocols = (
+                    "vless://",
+                    "ss://",
+                    "hysteria://",
+                    "hysteria2://",
+                    "hy2://",
+                    "trojan://",
+                )
+                if not link_lower.startswith(allowed_protocols):
                     continue
-                # -------------------------------
+
+                if any(
+                    geo in link_lower
+                    for geo in ["russia", "united states", "ukraine"]
+                ):
+                    continue
 
                 valid_links.add(link)
-
         except Exception as e:
             print(f"  - Ошибка загрузки источника {url.split('/')[-1]}: {e}")
 
     return list(valid_links)
 
 
-def parse_vless_link(link):
-    """Парсит vless:// строку в структурированный словарь."""
+def parse_proxy_link(link):
+    """Универсальный парсер для vless, trojan и shadowsocks."""
     try:
         parsed = urlparse(link)
-        uuid_str = parsed.username
-        host = parsed.hostname
-        port = parsed.port
+        protocol = parsed.scheme.lower()
         name = unquote(parsed.fragment) if parsed.fragment else "Без имени"
 
         query_params = parse_qs(parsed.query)
-        get_param = lambda key: query_params.get(key, [None])[0]
 
-        return {
+        def get_param(key):
+            return query_params.get(key, [None])[0]
+
+        # Базовая структура
+        data = {
+            "protocol": protocol,
             "name": name,
-            "address": host,
-            "port": int(port) if port else 443,
-            "id": uuid_str,
-            "encryption": get_param("encryption") or "none",
-            "security": get_param("security") or "none",
-            "sni": get_param("sni"),
-            "fp": get_param("fp") or "chrome",
-            "pbk": get_param("pbk"),
-            "sid": get_param("sid"),
-            "type": get_param("type") or "tcp"
+            "address": parsed.hostname,
+            "port": int(parsed.port) if parsed.port else 443,
         }
+
+        if protocol == "vless" or protocol == "trojan":
+            data.update(
+                {
+                    "id": parsed.username,
+                    "encryption": get_param("encryption") or "none",
+                    "security": get_param("security") or "none",
+                    "sni": get_param("sni"),
+                    "fp": get_param("fp") or "chrome",
+                    "pbk": get_param("pbk"),
+                    "sid": get_param("sid"),
+                    "type": get_param("type") or "tcp",
+                }
+            )
+        elif protocol == "ss":
+            user_info = parsed.username
+            if user_info and ":" not in user_info:
+                try:
+                    user_info += "=" * (-len(user_info) % 4)
+                    user_info = base64.b64decode(user_info).decode("utf-8")
+                except Exception:
+                    pass
+
+            if user_info and ":" in user_info:
+                method, password = user_info.split(":", 1)
+                data.update({"method": method, "password": password})
+            else:
+                return None
+
+        return data
     except Exception:
         return None
 
-
 def build_xray_config(server, local_port, config_filename):
-    """Формирует уникальный JSON конфиг для конкретного потока."""
-    config = {
-        "inbounds": [{
-            "port": local_port,
-            "listen": "127.0.0.1",
-            "protocol": "socks",
-            "settings": {"udp": True}
-        }],
-        "outbounds": [{
-            "protocol": "vless",
-            "settings": {
-                "vnext": [{
+    """Универсальный конфигуратор для Xray под разные протоколы."""
+    outbound = {"protocol": server["protocol"], "settings": {}}
+
+    if server["protocol"] == "vless":
+        outbound["settings"] = {
+            "vnext": [
+                {
                     "address": server["address"],
                     "port": server["port"],
-                    "users": [{
-                        "id": server["id"],
-                        "encryption": server["encryption"]
-                    }]
-                }]
-            },
-            "streamSettings": {
-                "network": server["type"],
-                "security": server["security"]
-            }
-        }]
-    }
-
-    if server["security"] == "reality":
-        config["outbounds"][0]["streamSettings"]["realitySettings"] = {
-            "show": False,
-            "fingerprint": server["fp"],
-            "serverName": server["sni"] or "",
-            "publicKey": server["pbk"] or "",
-            "shortId": server["sid"] or ""
+                    "users": [
+                        {
+                            "id": server["id"],
+                            "encryption": server["encryption"],
+                        }
+                    ],
+                }
+            ]
         }
+        outbound["streamSettings"] = {
+            "network": server["type"],
+            "security": server["security"],
+        }
+        if server["security"] == "reality":
+            outbound["streamSettings"]["realitySettings"] = {
+                "show": False,
+                "fingerprint": server["fp"],
+                "serverName": server["sni"] or "",
+                "publicKey": server["pbk"] or "",
+                "shortId": server["sid"] or "",
+            }
+
+    elif server["protocol"] == "trojan":
+        outbound["settings"] = {
+            "servers": [
+                {
+                    "address": server["address"],
+                    "port": server["port"],
+                    "password": server["id"],
+                }
+            ]
+        }
+        outbound["streamSettings"] = {
+            "network": server["type"],
+            "security": server["security"],
+        }
+        if server["security"] == "reality":
+            outbound["streamSettings"]["realitySettings"] = {
+                "show": False,
+                "fingerprint": server["fp"],
+                "serverName": server["sni"] or "",
+                "publicKey": server["pbk"] or "",
+                "shortId": server["sid"] or "",
+            }
+
+    elif server["protocol"] == "ss":
+        outbound["settings"] = {
+            "servers": [
+                {
+                    "address": server["address"],
+                    "port": server["port"],
+                    "method": server["method"],
+                    "password": server["password"],
+                }
+            ]
+        }
+
+    config = {
+        "inbounds": [
+            {
+                "port": local_port,
+                "listen": "127.0.0.1",
+                "protocol": "socks",
+                "settings": {"udp": True},
+            }
+        ],
+        "outbounds": [outbound],
+    }
 
     with open(config_filename, "w") as f:
         json.dump(config, f, indent=4)
 
 
 def test_single_proxy(link, task_index, thread_id):
-    """Рабочий метод потока: создает уникальный конфиг, запускает Xray и замеряет пинг."""
-    server_data = parse_vless_link(link)
+    server_data = parse_proxy_link(link)
     if not server_data:
         return None
 
-    # Распределяем порты строго по ID потока во избежание конфликтов
+    if server_data["protocol"] in ["hysteria", "hysteria2", "hy2"]:
+        return None
+
     local_port = LOCAL_PORT_START + thread_id
-    config_filename = f"temp_config_task_{task_index}_{uuid.uuid4().hex[:6]}.json"
+    config_filename = (
+        f"temp_config_task_{task_index}_{uuid.uuid4().hex[:6]}.json"
+    )
 
     build_xray_config(server_data, local_port, config_filename)
 
@@ -221,43 +296,35 @@ def test_single_proxy(link, task_index, thread_id):
         process = subprocess.Popen(
             [XRAY_PATH, "-c", config_filename],
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
+            stderr=subprocess.DEVNULL,
         )
-
-        # Даем ядру Xray чуть больше времени (800мс), чтобы железно поднять локальный порт
         time.sleep(0.8)
 
-        # Используем схему socks5h:// — она заставляет requests передавать DNS-запросы
-        # внутрь прокси-сервера. Это критично для обхода блокировок в РФ.
         proxies = {
             "http": f"socks5h://127.0.0.1:{local_port}",
-            "https": f"socks5h://127.0.0.1:{local_port}"
+            "https": f"socks5h://127.0.0.1:{local_port}",
         }
 
         ping_result = None
         start_time = time.time()
-
-        # Делаем быстрый GET запрос к Google с включенной SSL-верификацией.
-        # Если прокси рабочий — Google ответит за доли секунды.
-        response = requests.get("https://www.google.com", proxies=proxies, timeout=3.5, verify=True)
+        response = requests.get(
+            "https://cp.cloudflare.com", proxies=proxies, timeout=3.5, verify=True
+        )
         end_time = time.time()
 
         if response.status_code == 200:
             ping_result = round((end_time - start_time) * 1000)
 
     except requests.exceptions.RequestException:
-        # Сюда скрипт падал, если не был установлен requests[socks] или лежал сам прокси
         pass
     finally:
         if process:
             try:
-                process.kill()  # Жестко убиваем процесс, освобождая порт
+                process.kill()
                 process.wait()
             except Exception:
                 pass
-
         time.sleep(0.05)
-
         if os.path.exists(config_filename):
             try:
                 os.remove(config_filename)
@@ -265,7 +332,7 @@ def test_single_proxy(link, task_index, thread_id):
                 pass
 
     if ping_result is not None:
-        return ping_result, link, server_data['name']
+        return ping_result, link, server_data["name"]
     return None
 
 
@@ -282,12 +349,12 @@ def main():
         return
 
     working_configs = []
-
-    print(f"\n[*] Запуск многопоточного тестирования (Потоков: {MAX_THREADS})...")
+    print(
+        f"\n[*] Запуск многопоточного тестирования (Потоков: {MAX_THREADS})..."
+    )
     print("-" * 75)
 
     with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
-        # Передаем порядковый номер i для имени файла, и остаток от деления для распределения портов
         futures = {
             executor.submit(test_single_proxy, link, i, i % MAX_THREADS): link
             for i, link in enumerate(links)
@@ -298,17 +365,19 @@ def main():
             done_count += 1
             result = future.result()
 
-            if result and result[0] is not None:
+            if result is not None:
                 ping, link, name = result
                 working_configs.append((ping, link))
-                print(f"[{done_count}/{len(links)}] успешно | {ping:<5} мс | {name}")
-            else:
-                pass
+                print(
+                    f"[{done_count}/{len(links)}] успешно | {ping:<5} мс | {name}"
+                )
 
     print("-" * 75)
-    print(f"[*] Тестирование завершено. Успешных конфигураций: {len(working_configs)}")
+    print(
+        f"[*] Тестирование завершено. Успешных конфигураций: {len(working_configs)}"
+    )
 
-    # Сортировка по минимальному пингу
+    # Сортировка списка кортежей (ping, link) по первому элементу (ping)
     working_configs.sort(key=lambda x: x[0])
     top_60 = working_configs[:60]
 
@@ -316,7 +385,9 @@ def main():
         with open(OUTPUT_FILENAME, "w", encoding="utf-8") as f:
             for ping, link in top_60:
                 f.write(f"{link}\n")
-        print(f"[+] ТОП-60 самых быстрых прокси успешно сохранены в файл: {OUTPUT_FILENAME}")
+        print(
+            f"[+] ТОП-60 самых быстрых прокси успешно сохранены в файл: {OUTPUT_FILENAME}"
+        )
     except Exception as e:
         print(f"[-] Ошибка при записи в файл: {e}")
 
