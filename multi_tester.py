@@ -11,6 +11,7 @@ import requests
 SOURCES = [
     "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-CIDR-RU-all.txt",
     "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/BLACK_VLESS_RUS.txt",
+    "https://raw.githubusercontent.com/kort0881/vpn-vless-configs-russia/refs/heads/main/output/vless.txt",
     "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/1.txt",
     "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/2.txt",
     "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/3.txt",
@@ -38,10 +39,10 @@ SOURCES = [
     "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/25.txt",
 ]
 
-XRAY_PATH = "./xray/xray.exe"  # Используется ваш скачанный файл
+XRAY_PATH = "./xray/xray.exe"  # Используется скачанный файл
 LOCAL_PORT_START = 10800  # Каждый поток получит свой порт во избежание конфликтов
 OUTPUT_FILENAME = "fast_vless.txt"
-MAX_THREADS = 40  # Количество одновременно проверяемых прокси
+MAX_THREADS = 150  # Количество одновременно проверяемых прокси
 
 # ==================== НАСТРОЙКИ GIT ====================
 GIT_BRANCH = "main"
