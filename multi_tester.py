@@ -39,14 +39,16 @@ SOURCES = [
     "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/24.txt",
     "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/25.txt",
 ]
-
 SINGBOX_PATH = "./singBox/sing-box.exe"
 SINGBOX_CONFIG = "sing_box_config.json"
 LOCAL_PORT_START = 10800
 OUTPUT_FILENAME = "fast_vless.txt"
 
-# Порог одновременных опросов (для асинхронного sing-box можно ставить 300-500)
-MAX_CONCURRENT_TESTS = 300
+MAX_CONCURRENT_TESTS = 150  # Слегка снизим для стабильности на Windows сокетах
+BATCH_SIZE = 300           # Оптимальный размер пачки
+
+# MAX_CONCURRENT_TESTS = 50   # Не перегружаем сетевой стек
+# BATCH_SIZE = 100            # Оптимальный размер пачки для Windows
 
 GIT_BRANCH = "main"
 COMMIT_MESSAGE = "Auto-update: 60 fast configs via Sing-box"
@@ -56,18 +58,12 @@ REPO_PATH = os.path.dirname(os.path.abspath(__file__))
 def run_git_command(args):
     try:
         result = subprocess.run(
-            args,
-            cwd=REPO_PATH,
-            capture_output=True,
-            text=True,
-            check=True,
-            encoding="utf-8",
+            args, cwd=REPO_PATH, capture_output=True, text=True, check=True, encoding="utf-8"
         )
         print(result.stdout.strip())
         return True
     except subprocess.CalledProcessError as e:
-        print(f"Ошибка Git при выполнении {' '.join(args)}:")
-        print(f"Ошибка: {e.stderr.strip()}")
+        print(f"Ошибка Git при выполнении {' '.join(args)}: {e.stderr.strip()}")
         return False
 
 
@@ -77,11 +73,7 @@ def push_to_git():
         return
     try:
         status = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=REPO_PATH,
-            capture_output=True,
-            text=True,
-            check=True,
+            ["git", "status", "--porcelain"], cwd=REPO_PATH, capture_output=True, text=True, check=True
         )
         if not status.stdout.strip():
             print("Изменений в файле нет, Git push отменен.")
@@ -101,18 +93,16 @@ def push_to_git():
 def fetch_and_filter_links(sources):
     valid_links = set()
     print("[*] Скачивание конфигураций из источников...")
-    pattern = r"((?:vless|vmess|ss|trojan)://[^\s'\"<>]+)"
+    pattern = r"((?:vless|vmess|trojan)://[^\s'\"<>]+)"
 
     for url in sources:
         try:
-            response = httpx.get(url, timeout=10.0)
+            response = httpx.get(url, timeout=15.0)
             if response.status_code != 200:
                 continue
 
             found_links = re.findall(pattern, response.text)
-            print(
-                f"  - Найдено сырых ссылок в {url.split('/')[-1]}: {len(found_links)}"
-            )
+            print(f"  - Найдено сырых ссылок в {url.split('/')[-1]}: {len(found_links)}")
 
             for link in found_links:
                 link = link.strip()
@@ -120,19 +110,12 @@ def fetch_and_filter_links(sources):
                     continue
 
                 link_lower = link.lower()
-                allowed_protocols = (
-                    "vless://",
-                    "ss://",
-                    "trojan://",
-                    "vmess://",
-                )
+                allowed_protocols = ("vless://", "ss://", "trojan://", "vmess://")
                 if not link_lower.startswith(allowed_protocols):
                     continue
-
-                if any(
-                    geo in link_lower
-                    for geo in ["russia", "united states", "ukraine"]
-                ):
+                
+                # Исключаем явные метрики локальных регионов, если это необходимо
+                if any(geo in link_lower for geo in ["russia", "united states", "ukraine"]):
                     continue
 
                 valid_links.add(link)
@@ -143,7 +126,6 @@ def fetch_and_filter_links(sources):
 
 
 def parse_proxy_link(link):
-    """Парсер под формат данных ядра sing-box."""
     try:
         link_lower = link.lower()
 
@@ -180,31 +162,16 @@ def parse_proxy_link(link):
         }
 
         if protocol in ["vless", "trojan"]:
-            data.update(
-                {
-                    "uuid": parsed.username,
-                    "security": get_param("security") or "none",
-                    "network": get_param("type") or "tcp",
-                    "sni": get_param("sni") or "",
-                    "fp": get_param("fp") or "chrome",
-                    "pbk": get_param("pbk") or "",
-                    "sid": get_param("sid") or "",
-                }
-            )
-        elif protocol == "ss":
-            user_info = parsed.username
-            if user_info and ":" not in user_info:
-                try:
-                    user_info += "=" * (-len(user_info) % 4)
-                    user_info = base64.b64decode(user_info).decode("utf-8")
-                except Exception:
-                    pass
-
-            if user_info and ":" in user_info:
-                method, password = user_info.split(":", 1)
-                data.update({"method": method, "password": password})
-            else:
-                return None
+            data.update({
+                "uuid": parsed.username,
+                "security": get_param("security") or "none",
+                "network": get_param("type") or "tcp",
+                "sni": get_param("sni") or "",
+                "fp": get_param("fp") or "chrome",
+                "pbk": get_param("pbk") or "",
+                "sid": get_param("sid") or "",
+                "flow": get_param("flow") or ""
+            })
 
         return data
     except Exception:
@@ -212,22 +179,30 @@ def parse_proxy_link(link):
 
 
 def generate_singbox_config(servers_list):
-    """Генерирует 1 общий JSON конфиг для sing-box."""
+    """Генерирует чистый JSON конфиг для VLESS, Trojan и VMess, полностью исключая Shadowsocks."""
     inbounds = []
     outbounds = []
 
+    # Список разрешенных uTLS отпечатков для ядра sing-box
+    ALLOWED_FINGERPRINTS = ["chrome", "firefox", "safari", "edge", "android", "ios"]
+
     for index, s in enumerate(servers_list):
+        if not s or "protocol" not in s or not s.get("address"):
+            continue
+            
+        # Полностью игнорируем протокол shadowsocks, если он случайно проскочит
+        if s["protocol"] == "ss":
+            continue
+
         tag = f"proxy_{index}"
         local_port = LOCAL_PORT_START + index
 
-        inbounds.append(
-            {
-                "type": "socks",
-                "tag": f"in_{tag}",
-                "listen": "127.0.0.1",
-                "listen_port": local_port,
-            }
-        )
+        current_inbound = {
+            "type": "socks",
+            "tag": f"in_{tag}",
+            "listen": "127.0.0.1",
+            "listen_port": local_port,
+        }
 
         outbound = {
             "type": s["protocol"],
@@ -236,74 +211,142 @@ def generate_singbox_config(servers_list):
             "server_port": s["port"],
         }
 
+        skip_node = False
+
+        # --- НАСТРОЙКА VLESS ---
         if s["protocol"] == "vless":
-            outbound.update({"uuid": s["uuid"]})
+            outbound["uuid"] = s["uuid"]
+            if "vision" in s.get("flow", ""):
+                outbound["flow"] = "xtls-rprx-vision"
+
             if s["security"] in ["tls", "reality"]:
-                tls_block = {"enabled": True, "server_name": s["sni"]}
+                tls_block = {"enabled": True}
+                if s.get("sni"):
+                    tls_block["server_name"] = s["sni"]
+
+                fp_value = (s.get("fp") or "chrome").lower()
+                if fp_value not in ALLOWED_FINGERPRINTS:
+                    fp_value = "chrome"
+
+                tls_block["utls"] = {"enabled": True, "fingerprint": fp_value}
+                tls_block["fragment"] = True
+
                 if s["security"] == "reality":
+                    pub_key = s.get("pbk", "").strip()
+                    if not pub_key or len(pub_key) != 43:
+                        skip_node = True
+                        continue
+
                     tls_block["reality"] = {
                         "enabled": True,
-                        "public_key": s["pbk"],
-                        "short_id": s["sid"],
+                        "public_key": pub_key,
+                        "short_id": s.get("sid", "").strip(),
                     }
                 outbound["tls"] = tls_block
 
+        # --- НАСТРОЙКА TROJAN ---
         elif s["protocol"] == "trojan":
             outbound["password"] = s["uuid"]
             if s["security"] in ["tls", "reality"]:
-                tls_block = {"enabled": True, "server_name": s["sni"]}
+                tls_block = {"enabled": True}
+                if s.get("sni"):
+                    tls_block["server_name"] = s["sni"]
+
+                fp_value = (s.get("fp") or "chrome").lower()
+                if fp_value not in ALLOWED_FINGERPRINTS:
+                    fp_value = "chrome"
+
+                tls_block["utls"] = {"enabled": True, "fingerprint": fp_value}
+                tls_block["fragment"] = True
+
                 if s["security"] == "reality":
+                    pub_key = s.get("pbk", "").strip()
+                    if not pub_key or len(pub_key) != 43:
+                        skip_node = True
+                        continue
+
                     tls_block["reality"] = {
                         "enabled": True,
-                        "public_key": s["pbk"],
-                        "short_id": s["sid"],
+                        "public_key": pub_key,
+                        "short_id": s.get("sid", "").strip(),
                     }
                 outbound["tls"] = tls_block
 
+        # --- НАСТРОЙКА VMESS ---
         elif s["protocol"] == "vmess":
             outbound.update({"uuid": s["uuid"], "security": "auto"})
             if s["security"] == "tls":
-                outbound["tls"] = {"enabled": True, "server_name": s["sni"]}
-            if s["network"] == "ws":
-                outbound["transport"] = {
-                    "type": "ws",
-                    "path": s["path"],
-                    "headers": {"Host": s["sni"] or s["host"]},
+                outbound["tls"] = {
+                    "enabled": True, 
+                    "server_name": s.get("sni", ""),
+                    "fragment": True
                 }
 
-        elif s["protocol"] == "ss":
-            outbound.update({"method": s["method"], "password": s["password"]})
+            if s["network"] == "ws":
+                host_header = s.get("sni") or s.get("host") or s["address"]
+                outbound["transport"] = {
+                    "type": "ws",
+                    "path": s.get("path", ""),
+                    "headers": {"Host": host_header},
+                }
 
-        outbounds.append(outbound)
+        if not skip_node:
+            inbounds.append(current_inbound)
+            outbounds.append(outbound)
 
-    config = {"inbounds": inbounds, "outbounds": outbounds}
+    # Чистая конфигурация без лишних direct-выходов
+    config = {
+        "log": {"level": "error"},
+        "dns": {
+            "servers": [
+                {
+                    "type": "udp",
+                    "tag": "dns_direct",
+                    "server": "1.1.1.1"
+                }
+            ]
+        },
+        "inbounds": inbounds,
+        "outbounds": outbounds,
+        "route": {
+            "rules": [
+                {"inbound": [f"in_proxy_{i}"], "outbound": f"proxy_{i}"}
+                for i in range(len(outbounds))
+            ]
+        },
+    }
 
     with open(SINGBOX_CONFIG, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=4)
 
+
 async def test_url_via_socks(local_port, link, name, semaphore):
-    """Асинхронный HTTP-запрос через заданный Socks5-порт."""
+    """Асинхронный HTTP-запрос через Socks5-порт с исправленным синтаксисом httpx 2026 года."""
     async with semaphore:
         proxy_url = f"socks5://127.0.0.1:{local_port}"
-        start_time = time.time()
-        try:
-            async with httpx.AsyncClient(
-                proxies=proxy_url, timeout=3.5, verify=True
-            ) as proxy_client:
-                # Используем стабильный generate_204 от Google
-                response = await proxy_client.get(
-                    "https://cp.cloudflare.com"
-                )
-                if response.status_code in (200, 204):
-                    ping = round((time.time() - start_time) * 1000)
-                    return ping, link, name
-        except Exception:
-            pass
+        
+        for attempt in range(2):
+            start_time = time.time()
+            try:
+                # ИСПРАВЛЕНО: 'proxy' вместо 'proxies' для совместимости с новыми версиями httpx
+                async with httpx.AsyncClient(proxy=proxy_url, timeout=10.0, verify=False) as proxy_client:
+                    # Используем легкий и стабильный эндпоинт
+                    response = await proxy_client.get("https://httpbin.org", follow_redirects=True)
+                    
+                    if response.status_code == 200:
+                        ping = round((time.time() - start_time) * 1000)
+                        return ping, link, name
+            except (httpx.ProxyError, httpx.ConnectError):
+                # Если порт под нагрузкой еще не открылся, ждем 0.5 сек и пробуем финальный раз
+                if attempt == 0:
+                    await asyncio.sleep(0.5)
+                    continue
+            except Exception:
+                # Полностью глушим остальные ошибки, чтобы не спамить и не вешать консоль
+                pass
         return None
 
-
 async def main_async():
-    # 1. Тотальная приборка в системе от деда перед тестом
     print("[*] Предварительное уничтожение зависших процессов VPN-ядер...")
     for proc_name in ["xray.exe", "sing-box.exe"]:
         try:
@@ -316,9 +359,7 @@ async def main_async():
             pass
 
     if not os.path.exists(SINGBOX_PATH):
-        print(
-            f"[-] Ошибка: Ядро {SINGBOX_PATH} не найдено. Пожалуйста, скачайте его с GitHub."
-        )
+        print(f"[-] Ошибка: Ядро {SINGBOX_PATH} не найдено.")
         return
 
     links = fetch_and_filter_links(SOURCES)
@@ -327,77 +368,125 @@ async def main_async():
         return
 
     parsed_servers = []
+    seen_addresses = set()
     for link in links:
         data = parse_proxy_link(link)
-        if data:
-            parsed_servers.append((link, data))
+        if data and data.get("address"):
+            unique_key = f"{data['protocol']}_{data['address']}_{data['port']}"
+            if unique_key not in seen_addresses:
+                seen_addresses.add(unique_key)
+                parsed_servers.append((link, data))
 
-    print(f"[*] Успешно распарсено конфигураций: {len(parsed_servers)}")
+    total_proxies = len(parsed_servers)
+    print(f"[*] Успешно распарсено уникальных конфигураций: {total_proxies}")
 
-    singbox_proc = None
+    working_configs = []
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_TESTS)
+    BATCH_SIZE = 300  # 300 сокетов — оптимальный размер пачки под Windows
+
+    print(f"[*] Запуск циклического тестирования пачками по {BATCH_SIZE} штук...")
+
     try:
-        # Генерируем единственный файл конфигурации
-        generate_singbox_config([data for _, data in parsed_servers])
+        for i in range(0, total_proxies, BATCH_SIZE):
+            batch = parsed_servers[i : i + BATCH_SIZE]
+            print(f"\n[+] Тестирование пачки {i // BATCH_SIZE + 1} (Прокси с {i} по {i + len(batch)} из {total_proxies})...")
 
-        print("[*] Инициализация единого процесса Sing-box...")
-        singbox_proc = subprocess.Popen(
-            [SINGBOX_PATH, "run", "-c", SINGBOX_CONFIG],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+            generate_singbox_config([data for _, data in batch])
 
-        # Выделяем время на поднятие портов
-        await asyncio.sleep(1.5)
-
-        working_configs = []
-        semaphore = asyncio.Semaphore(MAX_CONCURRENT_TESTS)
-
-        print(f"[*] Запуск массового асинхронного опроса прокси...")
-        print("-" * 75)
-
-        tasks = []
-        for index, (link, data) in enumerate(parsed_servers):
-            local_port = LOCAL_PORT_START + index
-            tasks.append(
-                test_url_via_socks(local_port, link, data["name"], semaphore)
+            # Запускаем Sing-box с захватом ошибок stderr
+            singbox_proc = subprocess.Popen(
+                [SINGBOX_PATH, "run", "-c", SINGBOX_CONFIG],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
             )
 
-        results = await asyncio.gather(*tasks)
+            # Выделяем время на прогрузку портов пачки и инициализацию TLS структур
+            await asyncio.sleep(5.0)
 
-        for res in results:
-            if res:
-                ping, link, name = res
-                working_configs.append((ping, link))
-                print(f"[Успешно] | {ping:<5} мс | {name}")
+            # Если ядро вылетело — пишем ошибку и скипаем пачку
+            if singbox_proc.poll() is not None:
+                print(f"[-] Ошибка: Sing-box упал при старте пачки!")
+                print(f"[Логи ядра]:\n{singbox_proc.stderr.read()}")
+                continue
+
+            tasks = []
+            for local_index, (link, data) in enumerate(batch):
+                local_port = LOCAL_PORT_START + local_index
+                tasks.append(
+                    test_url_via_socks(local_port, link, data["name"], semaphore)
+                )
+
+            results = await asyncio.gather(*tasks)
+
+            batch_success = 0
+            for res in results:
+                if res:
+                    ping, link, name = res
+                    working_configs.append((ping, link))
+                    batch_success += 1
+                    print(f"[Успешно] | {ping:<5} мс | {name}")
+
+            print(f"[i] Пачка завершена. Найдено рабочих в этой пачке: {batch_success}")
+
+            # Жестко тушим конкретный процесс этой пачки по PID, чтобы он не остался в памяти Windows
+            try:
+                if singbox_proc.poll() is None: # Если процесс еще живой
+                    subprocess.run(
+                        ["taskkill", "/f", "/pid", str(singbox_proc.pid)],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+                singbox_proc.wait()
+            except Exception:
+                pass
 
         print("-" * 75)
-        print(f"[*] Сбор данных завершен. Рабочих: {len(working_configs)}")
+        print(f"[*] Полное тестирование завершено! Проверено: {total_proxies}. Рабочих всего: {len(working_configs)}")
 
-        working_configs.sort(key=lambda x: x[0])
+        working_configs.sort(key=lambda x: x)
         top_60 = working_configs[:60]
 
         try:
             with open(OUTPUT_FILENAME, "w", encoding="utf-8") as f:
                 for ping, link in top_60:
-                    f.write(f"{link}\n")
-            print(
-                f"[+] Топ-60 результатов сохранены в файл: {OUTPUT_FILENAME}"
-            )
-        except Exception as e:
-            print(f"[-] Ошибка сохранения результатов: {e}")
+                    # Модифицируем ссылку, добавляя параметры фрагментации для клиентов
+                    modified_link = link
+                    try:
+                        # Разделяем ссылку на основную часть и фрагмент (имя после #)
+                        if "#" in link:
+                            main_part, name_part = link.split("#", 1)
+                        else:
+                            main_part, name_part = link, ""
 
+                        # Проверяем, есть ли уже query-параметры
+                        if "?" in main_part:
+                            # Добавляем параметры к существующим
+                            # Некоторые клиенты читают фрагментацию через дефолтные пропсы, 
+                            # v2rayNG/NekoBox поддерживают чтение встроенных параметров у некоторых ядер
+                            if "fp=" not in main_part:
+                                main_part += "&fp=chrome"
+                        else:
+                            main_part += "?fp=chrome"
+
+                        # Интегрируем указание для современных GUI-клиентов на использование фрагментов.
+                        # Формат подмешивания кастомных флагов может отличаться для разных клиентов,
+                        # но добавление флага uTLS (fp=chrome) гарантирует эмуляцию во всех приложениях.
+                        
+                        modified_link = f"{main_part}#{name_part}" if name_part else main_part
+                    except Exception:
+                        pass # Если не удалось распарсить, оставляем ссылку как есть
+
+                    f.write(f"{modified_link}\n")
+            print(f"[+] ТОП-60 самых быстрых прокси успешно сохранены в файл: {OUTPUT_FILENAME}")
+        except Exception as e:
+            print(f"[-] Ошибка при записи в файл: {e}")
+        
         push_to_git()
 
     finally:
-        # 2. Финальная приборка: уничтожаем процесс ядра и ГАРАНТИРОВАННО стираем файл конфига
         print("[*] Очистка временных файлов и закрытие процессов...")
-        if singbox_proc:
-            try:
-                singbox_proc.kill()
-                singbox_proc.wait()
-            except Exception:
-                pass
-
         if os.path.exists(SINGBOX_CONFIG):
             try:
                 os.remove(SINGBOX_CONFIG)
