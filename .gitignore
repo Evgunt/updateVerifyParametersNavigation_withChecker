@@ -11,5 +11,8 @@ ENV/
 *.pyd
 *.gigacode_vsc
 
+singBox/
+sing_box_config.json
+
 .env
 temp_config_*.json

@@ -210,13 +210,16 @@ def parse_proxy_link(link):
     except Exception:
         return None
 
-
 def generate_singbox_config(servers_list):
-    """Генерирует 1 общий JSON конфиг для sing-box."""
+    """Генерирует 1 общий JSON конфиг для sing-box с защитой от отсутствующих ключей."""
     inbounds = []
     outbounds = []
 
     for index, s in enumerate(servers_list):
+        # Базовая защита: если в данных нет протокола или адреса, пропускаем
+        if not s or "protocol" not in s or "address" not in s:
+            continue
+
         tag = f"proxy_{index}"
         local_port = LOCAL_PORT_START + index
 
@@ -233,46 +236,52 @@ def generate_singbox_config(servers_list):
             "type": s["protocol"],
             "tag": tag,
             "server": s["address"],
-            "server_port": s["port"],
+            "server_port": s.get("port", 443),
         }
 
+        # --- НАСТРОЙКА VLESS ---
         if s["protocol"] == "vless":
-            outbound.update({"uuid": s["uuid"]})
-            if s["security"] in ["tls", "reality"]:
-                tls_block = {"enabled": True, "server_name": s["sni"]}
+            outbound.update({"uuid": s.get("uuid", "")})
+            if s.get("security") in ["tls", "reality"]:
+                tls_block = {"enabled": True, "server_name": s.get("sni", "")}
                 if s["security"] == "reality":
                     tls_block["reality"] = {
                         "enabled": True,
-                        "public_key": s["pbk"],
-                        "short_id": s["sid"],
+                        "public_key": s.get("pbk", ""),
+                        "short_id": s.get("sid", ""),
                     }
                 outbound["tls"] = tls_block
 
+        # --- НАСТРОЙКА TROJAN ---
         elif s["protocol"] == "trojan":
-            outbound["password"] = s["uuid"]
-            if s["security"] in ["tls", "reality"]:
-                tls_block = {"enabled": True, "server_name": s["sni"]}
+            outbound["password"] = s.get("uuid", "")
+            if s.get("security") in ["tls", "reality"]:
+                tls_block = {"enabled": True, "server_name": s.get("sni", "")}
                 if s["security"] == "reality":
                     tls_block["reality"] = {
                         "enabled": True,
-                        "public_key": s["pbk"],
-                        "short_id": s["sid"],
+                        "public_key": s.get("pbk", ""),
+                        "short_id": s.get("sid", ""),
                     }
                 outbound["tls"] = tls_block
 
+        # --- НАСТРОЙКА VMESS (Безопасная, даже если её нет) ---
         elif s["protocol"] == "vmess":
-            outbound.update({"uuid": s["uuid"], "security": "auto"})
-            if s["security"] == "tls":
-                outbound["tls"] = {"enabled": True, "server_name": s["sni"]}
-            if s["network"] == "ws":
+            outbound.update({"uuid": s.get("uuid", ""), "security": "auto"})
+            if s.get("security") == "tls":
+                outbound["tls"] = {"enabled": True, "server_name": s.get("sni", "")}
+            if s.get("network") == "ws":
+                # Защита от KeyError: берем sni, если нет — host, если нет — сам сервер
+                host_header = s.get("sni") or s.get("host") or s["address"]
                 outbound["transport"] = {
                     "type": "ws",
-                    "path": s["path"],
-                    "headers": {"Host": s["sni"] or s["host"]},
+                    "path": s.get("path", ""),
+                    "headers": {"Host": host_header},
                 }
 
+        # --- НАСТРОЙКА SHADOWSOCKS ---
         elif s["protocol"] == "ss":
-            outbound.update({"method": s["method"], "password": s["password"]})
+            outbound.update({"method": s.get("method", ""), "password": s.get("password", "")})
 
         outbounds.append(outbound)
 
@@ -280,6 +289,7 @@ def generate_singbox_config(servers_list):
 
     with open(SINGBOX_CONFIG, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=4)
+
 
 async def test_url_via_socks(local_port, link, name, semaphore):
     """Асинхронный HTTP-запрос через заданный Socks5-порт."""
