@@ -44,8 +44,8 @@ SINGBOX_CONFIG = "sing_box_config.json"
 LOCAL_PORT_START = 10800
 OUTPUT_FILENAME = "fast_vless.txt"
 
-MAX_CONCURRENT_TESTS = 150  # Слегка снизим для стабильности на Windows сокетах
-BATCH_SIZE = 300           # Оптимальный размер пачки
+MAX_CONCURRENT_TESTS = 250  # Слегка снизим для стабильности на Windows сокетах
+BATCH_SIZE = 500           # Оптимальный размер пачки
 
 # MAX_CONCURRENT_TESTS = 50   # Не перегружаем сетевой стек
 # BATCH_SIZE = 100            # Оптимальный размер пачки для Windows
@@ -382,7 +382,6 @@ async def main_async():
 
     working_configs = []
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_TESTS)
-    BATCH_SIZE = 300  # 300 сокетов — оптимальный размер пачки под Windows
 
     print(f"[*] Запуск циклического тестирования пачками по {BATCH_SIZE} штук...")
 
