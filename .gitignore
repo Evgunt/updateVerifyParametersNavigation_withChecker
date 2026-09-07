@@ -10,5 +10,7 @@ ENV/
 *.pyo
 *.pyd
 
+xray/
+
 .env
 temp_config_*.json
