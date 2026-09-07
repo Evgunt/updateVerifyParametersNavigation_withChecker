@@ -9,6 +9,7 @@ ENV/
 *.pyc
 *.pyo
 *.pyd
+*.gigacode_vsc
 
 .env
 temp_config_*.json
