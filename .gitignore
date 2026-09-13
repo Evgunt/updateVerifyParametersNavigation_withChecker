@@ -18,3 +18,5 @@ sing_box_config.json
 .env
 temp_config_*.json
 .fast_vless_checkpoint.json
+
+sources.txt
