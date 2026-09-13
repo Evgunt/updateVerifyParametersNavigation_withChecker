@@ -13,6 +13,8 @@ ENV/
 
 singBox/
 sing_box_config.json
+*.tmp
 
 .env
 temp_config_*.json
+.fast_vless_checkpoint.json
