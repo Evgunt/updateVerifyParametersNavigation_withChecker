@@ -1,105 +1,16 @@
+import asyncio
+import base64
+import json
+import math
 import os
 import re
-import json
-import time
-import base64
-import asyncio
 import subprocess
-from urllib.parse import urlparse, parse_qs, unquote
-
+import tempfile
+import time
+from statistics import mean
+from urllib.parse import parse_qs, unquote, urlparse
 import httpx
-
-SOURCES = [
-    "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-CIDR-RU-all.txt",
-    "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/BLACK_VLESS_RUS.txt",
-    "https://raw.githubusercontent.com/kort0881/vpn-vless-configs-russia/refs/heads/main/data/githubmirror/clean/vless.txt",
-    "https://raw.githubusercontent.com/kort0881/vpn-vless-configs-russia/refs/heads/main/data/githubmirror/clean/trojan.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/1.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/2.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/3.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/4.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/5.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/6.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/7.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/8.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/9.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/10.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/11.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/12.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/13.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/14.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/15.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/16.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/17.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/18.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/19.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/20.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/21.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/22.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/23.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/24.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/25.txt",
-]
-# ============================================================
-# SETTINGS
-# ============================================================
-# ============================================================
-# SETTINGS
-# ============================================================
-
-SINGBOX_PATH = "./singBox/sing-box.exe"
-SINGBOX_CONFIG = "sing_box_config.json"
-
-LOCAL_PORT_START = 10800
-
-OUTPUT_FILENAME = "fast_vless.txt"
-
-# Сколько конфигов загружаем в одну конфигурацию Sing-box.
-BATCH_SIZE = 300
-
-# Сколько прокси одновременно проверяем.
-MAX_CONCURRENT_TESTS = 30
-
-# Жесткий таймаут ОДНОГО прокси целиком.
-PROXY_TIMEOUT = 6.0
-
-# Максимальное время всей пачки.
-BATCH_TIMEOUT = 25.0
-
-# HTTP timeout должен быть меньше PROXY_TIMEOUT.
-HTTP_CONNECT_TIMEOUT = 2.5
-HTTP_READ_TIMEOUT = 2.5
-HTTP_WRITE_TIMEOUT = 2.5
-HTTP_POOL_TIMEOUT = 1.0
-
-# Сколько ждать после запуска Sing-box.
-SINGBOX_START_DELAY = 1.5
-
-# Сколько ждать после убийства Sing-box.
-CLEANUP_DELAY = 0.5
-
-# Повторные попытки отключаем.
-# Для массового тестера это сильно ускоряет обработку.
-RETRY_COUNT = 0
-
-# Сколько рабочих конфигов достаточно найти.
-TARGET_WORKING = 60
-
-# Используем очень лёгкий endpoint.
-TEST_URLS = [
-    "https://www.google.com/generate_204",
-]
-
-GIT_BRANCH = "main"
-
-COMMIT_MESSAGE = (
-    "Auto-update: 60 fast configs via Sing-box"
-)
-
-REPO_PATH = os.path.dirname(
-    os.path.abspath(__file__)
-)
-
+from settings import *
 
 # ============================================================
 # GIT
@@ -132,12 +43,10 @@ def run_git_command(args):
         print(f"Ошибка Git: {e}")
         return False
 
-
 def push_to_git():
     print("\n--- Запуск синхронизации с Git ---")
     if not run_git_command(["git", "add", OUTPUT_FILENAME]):
         return
-
     try:
         status = subprocess.run(
             ["git", "status", "--porcelain"],
@@ -155,25 +64,18 @@ def push_to_git():
     except Exception as e:
         print(f"[!] Не удалось проверить Git status: {e}")
         return
-
     if not run_git_command(["git", "commit", "-m", COMMIT_MESSAGE]):
         return
-
     if run_git_command(["git", "push", "origin", GIT_BRANCH]):
         print("[+] Данные успешно отправлены в репозиторий GitHub!")
     else:
         print("[-] Не удалось отправить данные в GitHub.")
-
 
 # ============================================================
 # PROCESS CLEANUP
 # ============================================================
 
 def kill_process_tree(proc=None):
-    """
-    Убивает конкретный Sing-box и его дочерние процессы.
-    После этого дополнительно убивает все sing-box.exe.
-    """
     if proc is not None:
         try:
             if proc.poll() is None:
@@ -188,12 +90,10 @@ def kill_process_tree(proc=None):
                     )
         except Exception as e:
             print(f"[!] Ошибка завершения PID: {e}")
-
         try:
             proc.wait(timeout=5)
         except Exception:
             pass
-
     if os.name == "nt":
         try:
             subprocess.run(
@@ -206,12 +106,10 @@ def kill_process_tree(proc=None):
         except Exception:
             pass
 
-
 def kill_old_vpn_processes():
     print("[*] Очистка старых VPN-процессов...")
     if os.name != "nt":
         return
-
     for proc_name in ["xray.exe", "sing-box.exe"]:
         try:
             subprocess.run(
@@ -224,49 +122,111 @@ def kill_old_vpn_processes():
         except Exception:
             pass
 
-
 async def cleanup_after_batch(proc):
     kill_process_tree(proc)
     await asyncio.sleep(CLEANUP_DELAY)
 
 # ============================================================
+# CHECKPOINT
+# ============================================================
+
+def atomic_write_json(filename, data):
+    temp_filename = filename + ".tmp"
+    try:
+        with open(temp_filename, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_filename, filename)
+        return True
+    except Exception as e:
+        print(f"[-] Ошибка сохранения checkpoint: {e}")
+        try:
+            if os.path.exists(temp_filename):
+                os.remove(temp_filename)
+        except Exception:
+            pass
+        return False
+
+def load_checkpoint():
+    if not os.path.exists(CHECKPOINT_FILENAME):
+        return None
+    try:
+        with open(CHECKPOINT_FILENAME, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return None
+        print("[+] Найден checkpoint.")
+        return data
+    except Exception as e:
+        print(f"[!] Не удалось загрузить checkpoint: {e}")
+        return None
+
+def save_checkpoint(batch_index, total_batches, working_configs, processed_keys):
+    data = {
+        "version": 2,
+        "batch_index": batch_index,
+        "total_batches": total_batches,
+        "working_configs": working_configs,
+        "processed_keys": list(processed_keys),
+        "saved_at": time.time(),
+    }
+    return atomic_write_json(CHECKPOINT_FILENAME, data)
+
+def delete_checkpoint():
+    try:
+        if os.path.exists(CHECKPOINT_FILENAME):
+            os.remove(CHECKPOINT_FILENAME)
+            print(f"[+] Checkpoint {CHECKPOINT_FILENAME} удален.")
+    except OSError as e:
+        print(f"[!] Не удалось удалить checkpoint: {e}")
+
+# ============================================================
 # DOWNLOAD CONFIGS
 # ============================================================
 
-def fetch_and_filter_links(sources):
-    valid_links = set()
-    print("[*] Скачивание конфигураций из источников...")
-    pattern = r"((?:vless|vmess|trojan|ss)://[^\s'\"<>]+)"
-
-    for url in sources:
-        try:
-            response = httpx.get(url, timeout=15.0, follow_redirects=True)
-            if response.status_code != 200:
-                print(f"  - HTTP {response.status_code}: {url}")
+def fetch_one_source(url):
+    try:
+        response = httpx.get(url, timeout=15.0, follow_redirects=True)
+        if response.status_code != 200:
+            return url, [], f"HTTP {response.status_code}"
+        pattern = r"((?:vless|vmess|trojan|ss)://[^\s'\"<>]+)"
+        found_links = re.findall(pattern, response.text, flags=re.IGNORECASE)
+        valid_links = []
+        for link in found_links:
+            link = link.strip()
+            if not link or link.startswith("#"):
                 continue
+            link_lower = link.lower()
+            allowed = ("vless://", "ss://", "trojan://", "vmess://")
+            if not link_lower.startswith(allowed):
+                continue
+            if any(geo in link_lower for geo in ["russia", "united states", "ukraine"]):
+                continue
+            valid_links.append(link)
+        return url, valid_links, None
+    except Exception as e:
+        return url, [], str(e)
 
-            found_links = re.findall(pattern, response.text, flags=re.IGNORECASE)
-            print(f"  - Найдено ссылок в {url.split('/')[-1]}: {len(found_links)}")
-
-            for link in found_links:
-                link = link.strip()
-                if not link or link.startswith("#"):
-                    continue
-
-                link_lower = link.lower()
-                allowed_protocols = ("vless://", "ss://", "trojan://", "vmess://")
-                if not link_lower.startswith(allowed_protocols):
-                    continue
-
-                if any(geo in link_lower for geo in ["russia", "united states", "ukraine"]):
-                    continue
-
-                valid_links.add(link)
-        except Exception as e:
-            print(f"  - Ошибка загрузки {url.split('/')[-1]}: {e}")
-
+async def fetch_and_filter_links_async(sources):
+    print("[*] Параллельное скачивание конфигураций...")
+    semaphore = asyncio.Semaphore(8)
+    async def worker(url):
+        async with semaphore:
+            return await asyncio.to_thread(fetch_one_source, url)
+    results = await asyncio.gather(*[worker(url) for url in sources], return_exceptions=True)
+    valid_links = set()
+    for result in results:
+        if isinstance(result, Exception):
+            print(f"  - Ошибка источника: {result}")
+            continue
+        url, links, error = result
+        if error:
+            print(f"  - Ошибка: {url.split('/')[-1]}: {error}")
+            continue
+        print(f"  - Найдено ссылок {url.split('/')[-1]}: {len(links)}")
+        valid_links.update(links)
     return list(valid_links)
-
 
 # ============================================================
 # PARSER
@@ -275,13 +235,11 @@ def fetch_and_filter_links(sources):
 def parse_proxy_link(link):
     try:
         link_lower = link.lower()
-
         if link_lower.startswith("vmess://"):
             b64_content = link[8:].strip()
             b64_content += "=" * (-len(b64_content) % 4)
             json_str = base64.b64decode(b64_content).decode("utf-8", errors="ignore")
             c = json.loads(json_str)
-
             return {
                 "protocol": "vmess",
                 "name": c.get("ps", "Без имени"),
@@ -292,23 +250,20 @@ def parse_proxy_link(link):
                 "network": c.get("net", "tcp"),
                 "path": c.get("path", ""),
                 "sni": c.get("sni") or c.get("host") or "",
+                "host": c.get("host", ""),
             }
-
         parsed = urlparse(link)
         protocol = parsed.scheme.lower()
         name = unquote(parsed.fragment) if parsed.fragment else "Без имени"
         query_params = parse_qs(parsed.query, keep_blank_values=True)
-
         def get_param(key):
             return query_params.get(key, [None])[0]
-
         data = {
             "protocol": protocol,
             "name": name,
             "address": parsed.hostname,
             "port": int(parsed.port) if parsed.port else 443,
         }
-
         if protocol in ["vless", "trojan"]:
             data.update({
                 "uuid": parsed.username,
@@ -319,45 +274,50 @@ def parse_proxy_link(link):
                 "pbk": get_param("pbk") or "",
                 "sid": get_param("sid") or "",
                 "flow": get_param("flow") or "",
+                "path": get_param("path") or "",
+                "host": get_param("host") or "",
             })
-
         return data
     except Exception:
         return None
 
-
 # ============================================================
-# VALIDATE SERVER
+# VALIDATION
 # ============================================================
 
 def is_supported_server(data):
     if not data:
         return False
-
     protocol = data.get("protocol")
     if protocol not in ["vless", "vmess", "trojan"]:
         return False
-
     if not data.get("address") or not data.get("port"):
         return False
-
     if protocol in ["vless", "trojan"]:
         if not data.get("uuid"):
             return False
-
         if data.get("security") == "reality":
             pub_key = data.get("pbk", "").strip()
             if len(pub_key) != 43:
                 return False
-
     if protocol == "vmess" and not data.get("uuid"):
         return False
-
     return True
 
+# ============================================================
+# CONFIG FINGERPRINT
+# ============================================================
+
+def server_fingerprint(data):
+    fields = ["protocol", "address", "port", "uuid", "security", "network", "sni", "fp", "pbk", "sid", "flow", "path", "host"]
+    values = []
+    for field in fields:
+        value = data.get(field, "")
+        values.append(str(value).strip().lower())
+    return "|".join(values)
 
 # ============================================================
-# SING-BOX OUTBOUND BUILDER
+# SING-BOX OUTBOUND
 # ============================================================
 
 def build_outbound(data, tag):
@@ -369,27 +329,19 @@ def build_outbound(data, tag):
         "server_port": data["port"],
     }
     allowed_fingerprints = ["chrome", "firefox", "safari", "edge", "android", "ios"]
-
-    # --------------------------------------------------------
-    # VLESS
-    # --------------------------------------------------------
     if protocol == "vless":
         outbound["uuid"] = data["uuid"]
         if "vision" in data.get("flow", ""):
             outbound["flow"] = "xtls-rprx-vision"
-
         if data.get("security") in ["tls", "reality"]:
             tls_block = {"enabled": True}
             if data.get("sni"):
                 tls_block["server_name"] = data["sni"]
-
             fp_value = (data.get("fp") or "chrome").lower()
             if fp_value not in allowed_fingerprints:
                 fp_value = "chrome"
-
             tls_block["utls"] = {"enabled": True, "fingerprint": fp_value}
             tls_block["fragment"] = True
-
             if data.get("security") == "reality":
                 tls_block["reality"] = {
                     "enabled": True,
@@ -397,24 +349,17 @@ def build_outbound(data, tag):
                     "short_id": data.get("sid", "").strip(),
                 }
             outbound["tls"] = tls_block
-
-    # --------------------------------------------------------
-    # TROJAN
-    # --------------------------------------------------------
     elif protocol == "trojan":
         outbound["password"] = data["uuid"]
         if data.get("security") in ["tls", "reality"]:
             tls_block = {"enabled": True}
             if data.get("sni"):
                 tls_block["server_name"] = data["sni"]
-
             fp_value = (data.get("fp") or "chrome").lower()
             if fp_value not in allowed_fingerprints:
                 fp_value = "chrome"
-
             tls_block["utls"] = {"enabled": True, "fingerprint": fp_value}
             tls_block["fragment"] = True
-
             if data.get("security") == "reality":
                 tls_block["reality"] = {
                     "enabled": True,
@@ -422,10 +367,6 @@ def build_outbound(data, tag):
                     "short_id": data.get("sid", "").strip(),
                 }
             outbound["tls"] = tls_block
-
-    # --------------------------------------------------------
-    # VMESS
-    # --------------------------------------------------------
     elif protocol == "vmess":
         outbound.update({"uuid": data["uuid"], "security": "auto"})
         if data.get("security") == "tls":
@@ -434,20 +375,17 @@ def build_outbound(data, tag):
                 tls_block["server_name"] = data["sni"]
             tls_block["fragment"] = True
             outbound["tls"] = tls_block
-
         if data.get("network") == "ws":
-            host_header = data.get("sni") or data.get("host") or data["address"]
+            host_header = data.get("host") or data.get("sni") or data["address"]
             outbound["transport"] = {
                 "type": "ws",
                 "path": data.get("path", ""),
                 "headers": {"Host": host_header},
             }
-
     return outbound
 
-
 # ============================================================
-# GENERATE SING-BOX CONFIG
+# GENERATE CONFIG
 # ============================================================
 
 def generate_singbox_config(servers_list):
@@ -455,17 +393,14 @@ def generate_singbox_config(servers_list):
     outbounds = []
     rules = []
     valid_servers = []
-
     for link, data in servers_list:
         if not is_supported_server(data):
             continue
         valid_servers.append((link, data))
-
     for index, (link, data) in enumerate(valid_servers):
         tag = f"proxy_{index}"
         inbound_tag = f"in_{tag}"
         local_port = LOCAL_PORT_START + index
-
         inbounds.append({
             "type": "socks",
             "tag": inbound_tag,
@@ -474,7 +409,6 @@ def generate_singbox_config(servers_list):
         })
         outbounds.append(build_outbound(data, tag))
         rules.append({"inbound": [inbound_tag], "outbound": tag})
-
     config = {
         "log": {"level": "error"},
         "dns": {
@@ -484,321 +418,168 @@ def generate_singbox_config(servers_list):
         "outbounds": outbounds,
         "route": {"rules": rules},
     }
-
     with open(SINGBOX_CONFIG, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
-
     return valid_servers
 
-
 # ============================================================
-# TEST ONE PROXY
+# REAL PROXY TEST
 # ============================================================
-async def test_one_proxy(local_port, link, name,):
-    proxy_url = (
-        f"socks5://127.0.0.1:{local_port}"
-    )
 
+async def test_one_proxy(local_port, link, name):
+    proxy_url = f"socks5://127.0.0.1:{local_port}"
     timeout = httpx.Timeout(
         connect=HTTP_CONNECT_TIMEOUT,
         read=HTTP_READ_TIMEOUT,
         write=HTTP_WRITE_TIMEOUT,
         pool=HTTP_POOL_TIMEOUT,
     )
-
-    async def do_request():
-        start_time = time.monotonic()
+    start_time = time.monotonic()
+    try:
         async with httpx.AsyncClient(
             proxy=proxy_url,
             timeout=timeout,
             verify=False,
             follow_redirects=False,
-            limits=httpx.Limits(
-                max_connections=1,
-                max_keepalive_connections=0,
-            ),
+            limits=httpx.Limits(max_connections=2, max_keepalive_connections=0),
         ) as client:
-
-            for test_url in TEST_URLS:
-                response = await client.get(test_url)
-                if response.status_code in (200, 204,):
-                    ping = round((time.monotonic() - start_time) * 1000)
-
-                    return (ping, link, name)
-        return None
-
-    try:
-        # ----------------------------------------------------
-        # Жесткий timeout на весь прокси.
-        # ----------------------------------------------------
-        return await asyncio.wait_for(
-            do_request(),
-            timeout=PROXY_TIMEOUT,
-        )
-
-    except asyncio.TimeoutError:
-        return None
+            response = await client.get(TEST_URLS)
+            if response.status_code not in (200, 204):
+                return None
+            ip_response = await client.get(IP_CHECK_URL)
+            if ip_response.status_code != 200:
+                return None
+            try:
+                ip_data = ip_response.json()
+                external_ip = ip_data.get("ip")
+                if not external_ip:
+                    return None
+            except Exception:
+                return None
+            elapsed = round((time.monotonic() - start_time) * 1000)
+            return {
+                "ping": elapsed,
+                "link": link,
+                "name": name,
+                "external_ip": external_ip,
+                "success": True,
+            }
     except asyncio.CancelledError:
         raise
     except (
-        httpx.ProxyError,
-        httpx.ConnectError,
-        httpx.ConnectTimeout,
-        httpx.ReadTimeout,
-        httpx.WriteTimeout,
-        httpx.PoolTimeout,
-        httpx.RemoteProtocolError,
-        httpx.NetworkError,
+        httpx.ProxyError, httpx.ConnectError, httpx.ConnectTimeout,
+        httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout,
+        httpx.RemoteProtocolError, httpx.NetworkError
     ):
         return None
     except Exception:
         return None
 
+# ============================================================
+# PROGRESS BAR
+# ============================================================
+
+def progress_bar(completed, total, width=30):
+    if total <= 0:
+        return ""
+    ratio = min(completed / total, 1.0)
+    filled = int(width * ratio)
+    bar = "█" * filled + "░" * (width - filled)
+    return f"[{bar}] {completed}/{total}"
+
+def print_progress(completed, total, results, started, active):
+    elapsed = time.monotonic() - started
+    if completed:
+        avg_time = elapsed / completed
+        remaining = max(total - completed, 0)
+        eta = remaining * avg_time
+    else:
+        eta = 0
+    if results:
+        avg_ping = round(mean(r["ping"] for r in results))
+        best_ping = min(r["ping"] for r in results)
+    else:
+        avg_ping = 0
+        best_ping = 0
+    line = (
+        f"\r{progress_bar(completed, total)} "
+        f"| OK: {len(results):>3} | active: {active:>3} "
+        f"| avg: {avg_ping:>4} ms | best: {best_ping:>4} ms | ETA: {eta:>4.1f}s"
+    )
+    print(line, end="", flush=True)
+
+# ============================================================
+# ADAPTIVE CONCURRENCY
+# ============================================================
+
+def adjust_concurrency(completed, failures, elapsed):
+    global current_concurrency
+    if completed <= 0:
+        return
+    failure_rate = failures / completed
+    if failure_rate >= 0.75:
+        current_concurrency = max(MIN_CONCURRENT_TESTS, current_concurrency - 20)
+        return
+    if failure_rate <= 0.25 and elapsed < BATCH_TIMEOUT * 0.75:
+        current_concurrency = min(MAX_CONCURRENT_TESTS, current_concurrency + 10)
 
 # ============================================================
 # TEST BATCH
 # ============================================================
 
-async def test_batch(
-    valid_servers,
-    batch_number,
-    total_batches,
-):
-    """
-    Проверяет пачку прокси.
-
-    Здесь принципиально НЕ используется обычный
-    asyncio.gather() на все 300 задач с бесконечным ожиданием.
-
-    Одновременно работают только MAX_CONCURRENT_TESTS
-    соединений.
-
-    Каждый отдельный прокси имеет PROXY_TIMEOUT.
-
-    Вся пачка имеет BATCH_TIMEOUT.
-    """
-
+async def test_batch(valid_servers, batch_number, total_batches):
+    global current_concurrency
     total = len(valid_servers)
-
     if total == 0:
         return []
-
-    semaphore = asyncio.Semaphore(
-        MAX_CONCURRENT_TESTS
-    )
-
+    semaphore = asyncio.Semaphore(current_concurrency)
     results = []
-
     completed = 0
-
+    failures = 0
     started = time.monotonic()
-
-    print(
-        f"[i] Пачка "
-        f"{batch_number}/{total_batches}: "
-        f"{total} тестов, "
-        f"одновременно "
-        f"{MAX_CONCURRENT_TESTS}"
-    )
-
-    async def worker(
-        index,
-        link,
-        data,
-    ):
-
-        async with semaphore:
-
-            local_port = (
-                LOCAL_PORT_START + index
-            )
-
-            return await test_one_proxy(
-                local_port,
-                link,
-                data.get(
-                    "name",
-                    "Без имени",
-                ),
-            )
-
-    tasks = []
-
-    # --------------------------------------------------------
-    # Создаем задачи.
-    #
-    # Они сразу упираются в semaphore, поэтому одновременно
-    # HTTP-соединений больше MAX_CONCURRENT_TESTS не будет.
-    # --------------------------------------------------------
-
-    for index, (link, data) in enumerate(
-        valid_servers
-    ):
-
-        task = asyncio.create_task(
-            worker(
-                index,
-                link,
-                data,
-            )
-        )
-
-        tasks.append(task)
-
-    try:
-
-        # ----------------------------------------------------
-        # Ждем результаты по мере завершения.
-        #
-        # Это лучше обычного gather для нашего тестера:
-        # быстрые прокси не ждут медленные.
-        # ----------------------------------------------------
-
-        for future in asyncio.as_completed(
-            tasks,
-            timeout=BATCH_TIMEOUT,
-        ):
-
-            try:
-
-                result = await future
-
-            except asyncio.CancelledError:
-
-                raise
-
-            except Exception:
-
-                result = None
-
-            completed += 1
-
-            if result:
-
-                ping, link, name = result
-
-                results.append(result)
-
-                print(
-                    f"[OK] "
-                    f"{completed:>3}/{total:<3} | "
-                    f"{ping:>5} мс | "
-                    f"{name}"
-                )
-
-            else:
-
-                print(
-                    f"[--] "
-                    f"{completed:>3}/{total:<3}",
-                    end="\r",
-                    flush=True,
-                )
-
-            # ------------------------------------------------
-            # Если уже получили достаточно рабочих,
-            # остальные тесты можно прекратить.
-            # ------------------------------------------------
-
-            if (
-                TARGET_WORKING > 0
-                and len(results)
-                >= TARGET_WORKING
-            ):
-
-                print()
-
-                print(
-                    "[i] Уже найдено "
-                    f"{len(results)} рабочих. "
-                    "Останавливаем оставшиеся тесты."
-                )
-
-                break
-
-    except asyncio.TimeoutError:
-
-        elapsed = round(
-            time.monotonic() - started,
-            1,
-        )
-
-        print()
-
-        print(
-            f"[!] Таймаут пачки "
-            f"{batch_number}: "
-            f"{elapsed} сек."
-        )
-
-        print(
-            f"[!] Завершено: "
-            f"{completed}/{total}. "
-            "Отменяем оставшиеся задачи..."
-        )
-
-    finally:
-
-        # ----------------------------------------------------
-        # КРИТИЧЕСКИ ВАЖНО
-        #
-        # Отменяем ВСЕ незавершенные задачи.
-        # ----------------------------------------------------
-
-        pending = [
-            task
-            for task in tasks
-            if not task.done()
-        ]
-
-        if pending:
-
-            for task in pending:
-                task.cancel()
-
-            await asyncio.gather(
-                *pending,
-                return_exceptions=True,
-            )
-
-        # ----------------------------------------------------
-        # Собираем результаты, которые уже успели завершиться,
-        # но могли не попасть в as_completed.
-        # ----------------------------------------------------
-
-        for task in tasks:
-
-            if not task.done():
-                continue
-
-            if task.cancelled():
-                continue
-
-            try:
-
-                result = task.result()
-
-            except Exception:
-
-                continue
-
-            if result is None:
-                continue
-
-            # Не добавляем дубликаты.
-            if result not in results:
-                results.append(result)
-
     print()
-
-    print(
-        f"[i] Пачка "
-        f"{batch_number} завершена: "
-        f"{len(results)} рабочих."
-    )
-
+    print(f"[i] Пачка {batch_number}/{total_batches}: {total} конфигов | concurrency={current_concurrency}")
+    async def worker(index, link, data):
+        async with semaphore:
+            local_port = LOCAL_PORT_START + index
+            return await asyncio.wait_for(
+                test_one_proxy(local_port, link, data.get("name", "Без имени")),
+                timeout=PROXY_TIMEOUT,
+            )
+    tasks = []
+    for index, (link, data) in enumerate(valid_servers):
+        tasks.append(asyncio.create_task(worker(index, link, data)))
+    try:
+        for future in asyncio.as_completed(tasks, timeout=BATCH_TIMEOUT):
+            try:
+                result = await future
+            except asyncio.TimeoutError:
+                result = None
+            except Exception:
+                result = None
+            completed += 1
+            if result:
+                results.append(result)
+            else:
+                failures += 1
+            active = sum(not task.done() for task in tasks)
+            print_progress(completed, total, results, started, active)
+            if TARGET_WORKING > 0 and len(results) >= TARGET_WORKING:
+                break
+    except asyncio.TimeoutError:
+        print()
+        print(f"[!] Пачка {batch_number}: достигнут таймаут {BATCH_TIMEOUT}s.")
+    finally:
+        pending = [task for task in tasks if not task.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+    elapsed = time.monotonic() - started
+    adjust_concurrency(completed, failures, elapsed)
+    print()
+    print(f"[+] Пачка {batch_number}: {len(results)} рабочих | {completed}/{total} проверено | {elapsed:.1f}s | следующая concurrency={current_concurrency}")
     return results
-
 
 # ============================================================
 # START SING-BOX
@@ -819,7 +600,6 @@ def start_singbox():
     except Exception as e:
         print(f"[-] Не удалось запустить Sing-box: {e}")
         return None
-
 
 # ============================================================
 # CHECK SING-BOX CONFIG
@@ -848,9 +628,33 @@ def check_singbox_config():
         print(f"[-] Ошибка проверки конфига Sing-box: {e}")
         return False
 
+# ============================================================
+# LOAD OLD FAST_VLESS
+# ============================================================
+
+def load_old_configs():
+    if not os.path.exists(OUTPUT_FILENAME):
+        return []
+    print(f"[*] Загружаем старые конфигурации из {OUTPUT_FILENAME}...")
+    configs = []
+    try:
+        with open(OUTPUT_FILENAME, "r", encoding="utf-8") as f:
+            for line in f:
+                link = line.strip()
+                if not link:
+                    continue
+                data = parse_proxy_link(link)
+                if not is_supported_server(data):
+                    continue
+                configs.append((link, data))
+        print(f"[+] Старых конфигураций: {len(configs)}")
+        return configs
+    except Exception as e:
+        print(f"[!] Ошибка чтения {OUTPUT_FILENAME}: {e}")
+        return []
 
 # ============================================================
-# SAVE RESULTS
+# MODIFY LINK
 # ============================================================
 
 def modify_link_for_output(link):
@@ -860,187 +664,265 @@ def modify_link_for_output(link):
         else:
             main_part = link
             name_part = ""
-
         query_lower = main_part.lower()
         if "?" in main_part:
             if not re.search(r"(?:[?&])fp=", query_lower):
                 main_part += "&fp=chrome"
         else:
             main_part += "?fp=chrome"
-
         return f"{main_part}#{name_part}" if name_part else main_part
     except Exception:
         return link
 
+# ============================================================
+# RATING
+# ============================================================
+
+def calculate_score(result, max_ping):
+    ping = result["ping"]
+    if max_ping <= 0:
+        speed_score = 100
+    else:
+        speed_score = 100 * (1 - (ping / max_ping))
+    speed_score = max(0, speed_score)
+    tunnel_bonus = 15
+    return speed_score * 0.85 + tunnel_bonus
+
+def rank_results(results):
+    if not results:
+        return []
+    max_ping = max(r["ping"] for r in results)
+    ranked = []
+    for result in results:
+        score = calculate_score(result, max_ping)
+        item = dict(result)
+        item["score"] = round(score, 2)
+        ranked.append(item)
+    ranked.sort(key=lambda x: (-x["score"], x["ping"]))
+    return ranked
+
+# ============================================================
+# RESULT CONVERSION
+# ============================================================
+
+def result_to_checkpoint(result):
+    return {
+        "ping": result["ping"],
+        "link": result["link"],
+        "name": result.get("name", "Без имени"),
+        "external_ip": result.get("external_ip", ""),
+        "score": result.get("score", 0),
+    }
+
+def checkpoint_to_result(item):
+    try:
+        return {
+            "ping": int(item["ping"]),
+            "link": item["link"],
+            "name": item.get("name", "Без имени"),
+            "external_ip": item.get("external_ip", ""),
+            "success": True,
+            "score": float(item.get("score", 0)),
+        }
+    except Exception:
+        return None
+
+# ============================================================
+# SAVE RESULTS
+# ============================================================
 
 def save_results(working_configs):
-    working_configs.sort(key=lambda x: x[0])
-    top_60 = working_configs[:60]
-
+    if not working_configs:
+        print("[-] Нет рабочих конфигураций для сохранения.")
+        return False
+    ranked = rank_results(working_configs)
+    top_configs = ranked[:TARGET_WORKING]
     try:
-        with open(OUTPUT_FILENAME, "w", encoding="utf-8") as f:
-            for ping, link in top_60:
-                modified_link = modify_link_for_output(link)
-                f.write(f"{modified_link}\n")
-        print(f"[+] ТОП-{len(top_60)} сохранен в {OUTPUT_FILENAME}")
+        temp_file = OUTPUT_FILENAME + ".tmp"
+        with open(temp_file, "w", encoding="utf-8") as f:
+            for result in top_configs:
+                link = modify_link_for_output(result["link"])
+                f.write(link + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_file, OUTPUT_FILENAME)
+        print(f"[+] ТОП-{len(top_configs)} сохранен в {OUTPUT_FILENAME}")
         return True
     except Exception as e:
         print(f"[-] Ошибка записи результата: {e}")
         return False
 
-
 # ============================================================
-# MAIN
+# BUILD SERVER LIST
 # ============================================================
-async def main_async():
-    kill_old_vpn_processes()
 
-    if not os.path.exists(SINGBOX_PATH):
-        print(f"[-] Ошибка: ядро {SINGBOX_PATH} не найдено.")
-        return
-
-    # --------------------------------------------------------
-    # DOWNLOAD
-    # --------------------------------------------------------
-    links = fetch_and_filter_links(SOURCES)
-    if not links:
-        print("[-] Нет доступных ссылок для тестов.")
-        return
-
-    # --------------------------------------------------------
-    # PARSE
-    # --------------------------------------------------------
-    parsed_servers = []
+def parse_links(links):
+    parsed = []
     seen = set()
-
     for link in links:
         data = parse_proxy_link(link)
         if not is_supported_server(data):
             continue
-
-        unique_key = f"{data['protocol']}:{data['address']}:{data['port']}"
-        if unique_key in seen:
+        key = server_fingerprint(data)
+        if key in seen:
             continue
+        seen.add(key)
+        parsed.append((link, data))
+    return parsed
 
-        seen.add(unique_key)
-        parsed_servers.append((link, data))
+# ============================================================
+# TEST ONE GROUP
+# ============================================================
 
-    total_proxies = len(parsed_servers)
-    print(f"\n[*] Уникальных конфигураций: {total_proxies}")
+async def run_test_group(servers, label):
+    if not servers:
+        return []
+    print()
+    print("=" * 75)
+    print(f"[+] {label}: {len(servers)} конфигураций")
+    kill_old_vpn_processes()
+    await asyncio.sleep(0.3)
+    try:
+        valid_servers = generate_singbox_config(servers)
+    except Exception as e:
+        print(f"[-] Ошибка генерации конфига: {e}")
+        return []
+    if not valid_servers:
+        print("[-] Нет подходящих конфигураций.")
+        return []
+    if not check_singbox_config():
+        print("[-] Конфиг Sing-box не прошёл проверку.")
+        return []
+    proc = start_singbox()
+    if proc is None:
+        return []
+    print(f"[i] Sing-box запущен. PID={proc.pid}")
+    await asyncio.sleep(SINGBOX_START_DELAY)
+    if proc.poll() is not None:
+        print("[-] Sing-box завершился сразу после запуска.")
+        kill_process_tree(proc)
+        return []
+    try:
+        results = await test_batch(valid_servers, 1, 1)
+    except Exception as e:
+        print(f"[-] Ошибка тестирование: {e}")
+        results = []
+    await cleanup_after_batch(proc)
+    return results
 
-    if not parsed_servers:
-        print("[-] После парсинга конфигураций не осталось.")
+# ============================================================
+# MAIN
+# ============================================================
+
+async def main_async():
+    global current_concurrency
+    kill_old_vpn_processes()
+    if not os.path.exists(SINGBOX_PATH):
+        print(f"[-] Ошибка: ядро {SINGBOX_PATH} не найдено.")
         return
-
+    checkpoint = load_checkpoint()
     working_configs = []
+    if checkpoint:
+        for item in checkpoint.get("working_configs", []):
+            result = checkpoint_to_result(item)
+            if result:
+                working_configs.append(result)
+        print(f"[+] Восстановлено {len(working_configs)} результатов из checkpoint.")
+    old_configs = load_old_configs()
+    old_results = []
+    if old_configs:
+        print()
+        print("[*] Повторно проверяем старые рабочие конфиги...")
+        old_results = await run_test_group(old_configs, "ПОВТОРНАЯ ПРОВЕРКА СТАРЫХ")
+        if old_results:
+            working_configs.extend(old_results)
+            unique_results = {}
+            for result in working_configs:
+                data = parse_proxy_link(result["link"])
+                if not data:
+                    continue
+                key = server_fingerprint(data)
+                current = unique_results.get(key)
+                if current is None or result["ping"] < current["ping"]:
+                    unique_results[key] = result
+            working_configs = list(unique_results.values())
+            print(f"[+] После повторной проверки осталось {len(working_configs)} рабочих старых конфигов.")
+            save_results(working_configs)
+    if TARGET_WORKING > 0 and len(working_configs) >= TARGET_WORKING:
+        print("\n[+] Старых рабочих конфигураций уже достаточно.")
+        save_results(working_configs)
+        push_to_git()
+        delete_checkpoint()
+        return
+    links = await fetch_and_filter_links_async(SOURCES)
+    if not links:
+        print("[-] Новых ссылок для тестов нет.")
+        if working_configs:
+            save_results(working_configs)
+            push_to_git()
+        return
+    parsed_servers = parse_links(links)
+    print()
+    print(f"[*] Уникальных новых конфигураций: {len(parsed_servers)}")
+    if not parsed_servers:
+        print("[-] После парсинга новых конфигураций не осталось.")
+        if working_configs:
+            save_results(working_configs)
+            push_to_git()
+        return
+    existing_keys = set()
+    for result in working_configs:
+        data = parse_proxy_link(result["link"])
+        if data:
+            existing_keys.add(server_fingerprint(data))
+    new_servers = []
+    for link, data in parsed_servers:
+        key = server_fingerprint(data)
+        if key in existing_keys:
+            continue
+        new_servers.append((link, data))
+    print(f"[*] После исключения уже рабочих: {len(new_servers)} новых.")
+    total_proxies = len(new_servers)
+    if total_proxies == 0:
+        print("[i] Новых конфигураций для проверки нет.")
+        save_results(working_configs)
+        push_to_git()
+        delete_checkpoint()
+        return
     total_batches = (total_proxies + BATCH_SIZE - 1) // BATCH_SIZE
-
     print(f"[*] Пачек: {total_batches}")
     print(f"[*] Размер пачки: {BATCH_SIZE}")
-    print(f"[*] Параллельных тестов: {MAX_CONCURRENT_TESTS}")
-    print(f"[*] Timeout connect/read: {HTTP_CONNECT_TIMEOUT}/{HTTP_READ_TIMEOUT} сек.")
-
-    # --------------------------------------------------------
-    # BATCH LOOP
-    # --------------------------------------------------------
+    print(f"[*] Начальная concurrency: {current_concurrency}")
+    print(f"[*] Цель: {TARGET_WORKING} рабочих")
     try:
         for batch_index in range(total_batches):
             if TARGET_WORKING > 0 and len(working_configs) >= TARGET_WORKING:
-                print("\n[i] Найдено достаточно рабочих конфигураций.")
+                print("\n[+] Достигнута цель по рабочим.")
                 break
-
             start_index = batch_index * BATCH_SIZE
             end_index = min(start_index + BATCH_SIZE, total_proxies)
-            raw_batch = parsed_servers[start_index:end_index]
+            raw_batch = new_servers[start_index:end_index]
             batch_number = batch_index + 1
-
             print()
             print("=" * 75)
-            print(f"[+] Пачка {batch_number}/{total_batches} | {start_index + 1}-{end_index} из {total_proxies}")
-
-            # ------------------------------------------------
-            # CLEANUP
-            # ------------------------------------------------
-            kill_old_vpn_processes()
-            await asyncio.sleep(0.3)
-
-            # ------------------------------------------------
-            # CONFIG
-            # ------------------------------------------------
-            try:
-                valid_servers = generate_singbox_config(raw_batch)
-            except Exception as e:
-                print(f"[-] Ошибка генерации конфига: {e}")
-                continue
-
-            valid_count = len(valid_servers)
-            print(f"[i] Подходящих конфигов в пачке: {valid_count}")
-
-            if valid_count == 0:
-                print("[i] В пачке нет подходящих конфигураций.")
-                continue
-
-            # ------------------------------------------------
-            # CHECK CONFIG
-            # ------------------------------------------------
-            if not check_singbox_config():
-                print("[-] Пропускаем пачку.")
-                continue
-
-            # ------------------------------------------------
-            # START
-            # ------------------------------------------------
-            singbox_proc = start_singbox()
-            if singbox_proc is None:
-                print("[-] Sing-box не запустился.")
-                kill_old_vpn_processes()
-                continue
-
-            print(f"[i] Sing-box запущен. PID={singbox_proc.pid}")
-            await asyncio.sleep(SINGBOX_START_DELAY)
-
-            if singbox_proc.poll() is not None:
-                print("[-] Sing-box завершился сразу после запуска.")
-                kill_process_tree(singbox_proc)
-                await asyncio.sleep(CLEANUP_DELAY)
-                continue
-
-            # ------------------------------------------------
-            # TEST
-            # ------------------------------------------------
-            try:
-                results = await test_batch(valid_servers, batch_number, total_batches)
-            except asyncio.CancelledError:
-                print("[!] Проверка отменена.")
-                results = []
-            except Exception as e:
-                print(f"[-] Ошибка тестирование пачки: {e}")
-                results = []
-
-            # ------------------------------------------------
-            # RESULTS
-            # ------------------------------------------------
-            batch_success = 0
-            for result in results:
-                if not result:
+            print(f"[+] Новая пачка {batch_number}/{total_batches} | {start_index + 1}-{end_index} из {total_proxies}")
+            results = await run_test_group(raw_batch, f"НОВАЯ ПАЧКА {batch_number}/{total_batches}")
+            if results:
+                working_configs.extend(results)
+            unique_results = {}
+            for result in working_configs:
+                data = parse_proxy_link(result["link"])
+                if not data:
                     continue
-                try:
-                    ping, link, name = result
-                    working_configs.append((ping, link))
-                    batch_success += 1
-                except Exception:
-                    continue
-
-            print(f"\n[i] Пачка {batch_number} завершена.")
-            print(f"[i] Рабочих в пачке: {batch_success}")
-            print(f"[i] Рабочих всего: {len(working_configs)}")
-
-            # ------------------------------------------------
-            # CLEANUP
-            # ------------------------------------------------
-            await cleanup_after_batch(singbox_proc)
-            print("[i] Sing-box полностью остановлен.")
-
+                key = server_fingerprint(data)
+                old = unique_results.get(key)
+                if old is None or result["ping"] < old["ping"]:
+                    unique_results[key] = result
+            working_configs = list(unique_results.values())
+            ranked = rank_results(working_configs)
+            save_results(ranked)
+            save_checkpoint(batch_index + 1, total_batches, [result_to_checkpoint(r) for r in ranked], set())
+            print(f"[i] Рабочих всего: {len(working_configs)}/{TARGET_WORKING}")
     except KeyboardInterrupt:
         print("\n[!] Получен Ctrl+C.")
     except Exception as e:
@@ -1048,52 +930,41 @@ async def main_async():
     finally:
         print("\n[*] Финальная очистка VPN-процессов...")
         kill_old_vpn_processes()
-
-    # ========================================================
-    # FINAL
-    # ========================================================
     print()
     print("-" * 75)
     print("[*] Полное тестирование завершено!")
-    print(f"[*] Проверено конфигураций: {total_proxies}")
     print(f"[*] Рабочих найдено: {len(working_configs)}")
-
-    # --------------------------------------------------------
-    # SAVE TOP 60
-    # --------------------------------------------------------
     save_results(working_configs)
-
-    # --------------------------------------------------------
-    # GIT
-    # --------------------------------------------------------
     push_to_git()
-
-    # --------------------------------------------------------
-    # DELETE TEMP CONFIG
-    # --------------------------------------------------------
+    delete_checkpoint()
     if os.path.exists(SINGBOX_CONFIG):
         try:
             os.remove(SINGBOX_CONFIG)
             print(f"[+] Временный файл {SINGBOX_CONFIG} удален.")
         except OSError as e:
             print(f"[-] Не удалось удалить {SINGBOX_CONFIG}: {e}")
-
     print("\n[+] Работа завершена.")
-
 
 # ============================================================
 # ENTRY POINT
 # ============================================================
+
 if __name__ == "__main__":
     try:
         asyncio.run(main_async())
     except KeyboardInterrupt:
         print("\n[!] Программа остановлена пользователем.")
         kill_old_vpn_processes()
-        os.remove(SINGBOX_CONFIG)
-        print(f"[+] Временный файл {SINGBOX_CONFIG} удален.")
+        if os.path.exists(SINGBOX_CONFIG):
+            try:
+                os.remove(SINGBOX_CONFIG)
+            except OSError:
+                pass
     except Exception as e:
         print(f"\n[-] Необработанная ошибка: {e}")
         kill_old_vpn_processes()
-        os.remove(SINGBOX_CONFIG)
-        print(f"[+] Временный файл {SINGBOX_CONFIG} удален.")
+        if os.path.exists(SINGBOX_CONFIG):
+            try:
+                os.remove(SINGBOX_CONFIG)
+            except OSError:
+                pass
