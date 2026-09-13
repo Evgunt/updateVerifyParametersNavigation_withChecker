@@ -16,7 +16,9 @@ BATCH_SIZE = 300
 # Начальная / минимальная / максимальная конкуррентность.
 INITIAL_CONCURRENT_TESTS = 100
 MIN_CONCURRENT_TESTS = 50
-MAX_CONCURRENT_TESTS = 120
+MAX_CONCURRENT_TESTS = 200
+# GLOBAL STATE
+current_concurrency = INITIAL_CONCURRENT_TESTS
 
 PROXY_TIMEOUT = 6.0
 BATCH_TIMEOUT = 40.0
@@ -46,42 +48,14 @@ COMMIT_MESSAGE = (
 REPO_PATH = os.path.dirname(
     os.path.abspath(__file__)
 )
+# Путь к файлу со ссылками
+SOURCES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sources.txt")
 
-# Сюда оставляешь свои 15-20 источников.
-SOURCES = [
-    "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/WHITE-CIDR-RU-all.txt",
-    "https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/refs/heads/main/BLACK_VLESS_RUS.txt",
-    "https://raw.githubusercontent.com/kort0881/vpn-vless-configs-russia/refs/heads/main/data/githubmirror/clean/vless.txt",
-    "https://raw.githubusercontent.com/kort0881/vpn-vless-configs-russia/refs/heads/main/data/githubmirror/clean/trojan.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/1.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/2.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/3.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/4.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/5.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/6.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/7.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/8.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/9.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/10.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/11.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/12.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/13.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/14.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/15.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/16.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/17.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/18.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/19.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/20.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/21.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/22.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/23.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/24.txt",
-    "https://raw.githubusercontent.com/hiztin/VLESS-PO-GRIBI/main/deploy/subscriptions/25.txt",
-]
-
-# ============================================================
-# GLOBAL STATE
-# ============================================================
-
-current_concurrency = INITIAL_CONCURRENT_TESTS
+# Автоматически читаем ссылки из файла, если он существует
+if os.path.exists(SOURCES_FILE):
+    with open(SOURCES_FILE, "r", encoding="utf-8") as f:
+        # Читаем строки, убираем пробелы/переносы и отсекаем пустые строки или комментарии с #
+        SOURCES = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
+else:
+    # Если файла нет (например, кто-то скачал код с GitHub), скрипт просто получит пустой список
+    SOURCES = []
