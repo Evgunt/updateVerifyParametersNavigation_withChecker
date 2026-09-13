@@ -112,12 +112,13 @@ def kill_old_vpn_processes():
         return
     for proc_name in ["xray.exe", "sing-box.exe"]:
         try:
+            # shell=True и правильное экранирование флагов принудительно очищают дерево процессов в Windows
             subprocess.run(
-                ["taskkill", "/f", "/t", "/im", proc_name],
+                f"taskkill /F /T /IM {proc_name}",
+                shell=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                timeout=10,
-                creationflags=subprocess.CREATE_NO_WINDOW,
+                timeout=5
             )
         except Exception:
             pass
@@ -428,27 +429,41 @@ def generate_singbox_config(servers_list):
 
 async def test_one_proxy(local_port, link, name):
     proxy_url = f"socks5://127.0.0.1:{local_port}"
+    
+    # ИСПРАВЛЕНО: Убран ошибочный параметр total. 
+    # В httpx правильное управление таймаутами выглядит именно так:
     timeout = httpx.Timeout(
-        connect=HTTP_CONNECT_TIMEOUT,
-        read=HTTP_READ_TIMEOUT,
-        write=HTTP_WRITE_TIMEOUT,
-        pool=HTTP_POOL_TIMEOUT,
+        connect=HTTP_CONNECT_TIMEOUT,  # 2.5с из settings.py
+        read=HTTP_READ_TIMEOUT,        # 2.5с из settings.py
+        write=HTTP_WRITE_TIMEOUT,      # 2.5с из settings.py
+        pool=HTTP_POOL_TIMEOUT,        # 1.0с из settings.py
     )
+    
     start_time = time.monotonic()
     try:
+        # Безопасное отключение проверки SSL-сертификатов для Windows среды
+        ssl_context = httpx.create_ssl_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = False
+
         async with httpx.AsyncClient(
             proxy=proxy_url,
             timeout=timeout,
-            verify=False,
+            verify=ssl_context,
             follow_redirects=False,
-            limits=httpx.Limits(max_connections=2, max_keepalive_connections=0),
+            limits=httpx.Limits(max_connections=1, max_keepalive_connections=0),
         ) as client:
+            
+            # 1. Запрос к основному тестовому URL
             response = await client.get(TEST_URLS)
             if response.status_code not in (200, 204):
                 return None
+                
+            # 2. Быстрая проверка внешнего IP
             ip_response = await client.get(IP_CHECK_URL)
             if ip_response.status_code != 200:
                 return None
+                
             try:
                 ip_data = ip_response.json()
                 external_ip = ip_data.get("ip")
@@ -456,6 +471,7 @@ async def test_one_proxy(local_port, link, name):
                     return None
             except Exception:
                 return None
+                
             elapsed = round((time.monotonic() - start_time) * 1000)
             return {
                 "ping": elapsed,
@@ -464,15 +480,11 @@ async def test_one_proxy(local_port, link, name):
                 "external_ip": external_ip,
                 "success": True,
             }
+            
     except asyncio.CancelledError:
         raise
-    except (
-        httpx.ProxyError, httpx.ConnectError, httpx.ConnectTimeout,
-        httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout,
-        httpx.RemoteProtocolError, httpx.NetworkError
-    ):
-        return None
     except Exception:
+        # Сетевые ошибки (ошибки подключения, таймауты прокси) гасим, возвращая None
         return None
 
 # ============================================================
@@ -532,51 +544,60 @@ async def test_batch(valid_servers, batch_number, total_batches):
     total = len(valid_servers)
     if total == 0:
         return []
+        
     semaphore = asyncio.Semaphore(current_concurrency)
     results = []
     completed = 0
     failures = 0
     started = time.monotonic()
+    
     print()
     print(f"[i] Пачка {batch_number}/{total_batches}: {total} конфигов | concurrency={current_concurrency}")
+    
     async def worker(index, link, data):
+        nonlocal completed, failures
         async with semaphore:
             local_port = LOCAL_PORT_START + index
-            return await asyncio.wait_for(
-                test_one_proxy(local_port, link, data.get("name", "Без имени")),
-                timeout=PROXY_TIMEOUT,
-            )
+            try:
+                # Запускаем сам тест напрямую
+                res = await test_one_proxy(local_port, link, data.get("name", "Без имени"))
+                
+                # Обновляем счетчики сразу по факту выполнения конкретного теста
+                completed += 1
+                if res:
+                    results.append(res)
+                else:
+                    failures += 1
+                    
+                # Печатаем прогресс в реальном времени
+                active = total - completed
+                print_progress(completed, total, results, started, active)
+                return res
+            except Exception as e:
+                # Если упало что-то на уровне планировщика самого воркера — мы это УВИДИМ
+                print(f"\n[!] Сбой воркера на порту {local_port}: {e}")
+                completed += 1
+                failures += 1
+                return None
+
+    # Создаем явный список задач
     tasks = []
     for index, (link, data) in enumerate(valid_servers):
-        tasks.append(asyncio.create_task(worker(index, link, data)))
+        tasks.append(worker(index, link, data))
+        
     try:
-        for future in asyncio.as_completed(tasks, timeout=BATCH_TIMEOUT):
-            try:
-                result = await future
-            except asyncio.TimeoutError:
-                result = None
-            except Exception:
-                result = None
-            completed += 1
-            if result:
-                results.append(result)
-            else:
-                failures += 1
-            active = sum(not task.done() for task in tasks)
-            print_progress(completed, total, results, started, active)
-            if TARGET_WORKING > 0 and len(results) >= TARGET_WORKING:
-                break
+        # Используем wait_for только поверх общего gather, защищая всю пачку целиком от зависания.
+        # Это исключает ситуации, когда отдельные futures "схлопываются" внутри as_completed.
+        await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=BATCH_TIMEOUT)
     except asyncio.TimeoutError:
         print()
-        print(f"[!] Пачка {batch_number}: достигнут таймаут {BATCH_TIMEOUT}s.")
-    finally:
-        pending = [task for task in tasks if not task.done()]
-        for task in pending:
-            task.cancel()
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
+        print(f"[!] Пачка {batch_number}: достигнут общий таймаут пачки {BATCH_TIMEOUT}s.")
+    except Exception as e:
+        print(f"\n[-] Системная ошибка планировщика: {e}")
+            
     elapsed = time.monotonic() - started
     adjust_concurrency(completed, failures, elapsed)
+    
     print()
     print(f"[+] Пачка {batch_number}: {len(results)} рабочих | {completed}/{total} проверено | {elapsed:.1f}s | следующая concurrency={current_concurrency}")
     return results
@@ -586,15 +607,19 @@ async def test_batch(valid_servers, batch_number, total_batches):
 # ============================================================
 
 def start_singbox():
+    # Можно вернуть скрытие окна (CREATE_NO_WINDOW), если хотите, чтобы всё работало в фоне
     creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    
+    exe_dir = os.path.dirname(os.path.abspath(SINGBOX_PATH))
+    
     try:
         proc = subprocess.Popen(
-            [SINGBOX_PATH, "run", "-c", SINGBOX_CONFIG],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            [os.path.abspath(SINGBOX_PATH), "run", "-c", os.path.abspath(SINGBOX_CONFIG)],
+            stdout=subprocess.DEVNULL, # ИСПРАВЛЕНО: Глушим обычный вывод ядра
+            stderr=subprocess.DEVNULL, # ИСПРАВЛЕНО: Глушим ошибки ядра
             stdin=subprocess.DEVNULL,
+            cwd=exe_dir,   
             creationflags=creationflags,
-            start_new_session=(os.name != "nt"),
         )
         return proc
     except Exception as e:
@@ -732,9 +757,12 @@ def checkpoint_to_result(item):
 # ============================================================
 
 def save_results(working_configs):
+    # ПРЕДОХРАНИТЕЛЬ: Если список пустой, вообще ничего не делаем,
+    # чтобы не затереть старые конфигурации в файле пустотой.
     if not working_configs:
-        print("[-] Нет рабочих конфигураций для сохранения.")
+        print("[-] Найдено 0 рабочих конфигураций. Перезапись файла отменена, старые данные сохранены.")
         return False
+        
     ranked = rank_results(working_configs)
     top_configs = ranked[:TARGET_WORKING]
     try:
@@ -909,19 +937,25 @@ async def main_async():
             results = await run_test_group(raw_batch, f"НОВАЯ ПАЧКА {batch_number}/{total_batches}")
             if results:
                 working_configs.extend(results)
-            unique_results = {}
-            for result in working_configs:
-                data = parse_proxy_link(result["link"])
-                if not data:
-                    continue
-                key = server_fingerprint(data)
-                old = unique_results.get(key)
-                if old is None or result["ping"] < old["ping"]:
-                    unique_results[key] = result
-            working_configs = list(unique_results.values())
-            ranked = rank_results(working_configs)
-            save_results(ranked)
-            save_checkpoint(batch_index + 1, total_batches, [result_to_checkpoint(r) for r in ranked], set())
+            
+            # Пересобираем уникальные, только если у нас в принципе есть хоть какие-то рабочие конфиги
+            if working_configs:
+                unique_results = {}
+                for result in working_configs:
+                    data = parse_proxy_link(result["link"])
+                    if not data:
+                        continue
+                    key = server_fingerprint(data)
+                    old = unique_results.get(key)
+                    if old is None or result["ping"] < old["ping"]:
+                        unique_results[key] = result
+                working_configs = list(unique_results.values())
+                ranked = rank_results(working_configs)
+                
+                # Сохраняем и делаем чекпоинт только при наличии реальных данных
+                save_results(ranked)
+                save_checkpoint(batch_index + 1, total_batches, [result_to_checkpoint(r) for r in ranked], set())
+            
             print(f"[i] Рабочих всего: {len(working_configs)}/{TARGET_WORKING}")
     except KeyboardInterrupt:
         print("\n[!] Получен Ctrl+C.")

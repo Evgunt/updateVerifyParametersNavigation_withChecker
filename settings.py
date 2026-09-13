@@ -1,6 +1,7 @@
 # ============================================================
 # SETTINGS
 # ============================================================
+import os
 
 SINGBOX_PATH = "./singBox/sing-box.exe"
 SINGBOX_CONFIG = "sing_box_config.json"
@@ -18,7 +19,7 @@ MIN_CONCURRENT_TESTS = 50
 MAX_CONCURRENT_TESTS = 120
 
 PROXY_TIMEOUT = 6.0
-BATCH_TIMEOUT = 25.0
+BATCH_TIMEOUT = 40.0
 
 HTTP_CONNECT_TIMEOUT = 2.5
 HTTP_READ_TIMEOUT = 2.5
@@ -32,10 +33,7 @@ RETRY_COUNT = 0
 
 TARGET_WORKING = 60
 
-# Лёгкий endpoint + endpoint подтверждения выхода.
-TEST_URLS = [
-    "https://www.google.com/generate_204",
-]
+TEST_URLS = "https://www.google.com/generate_204"
 
 IP_CHECK_URL = "https://api.ipify.org?format=json"
 
