@@ -426,48 +426,56 @@ def generate_singbox_config(servers_list):
 # ============================================================
 # REAL PROXY TEST
 # ============================================================
-
 async def test_one_proxy(local_port, link, name):
     proxy_url = f"socks5://127.0.0.1:{local_port}"
     
-    # ИСПРАВЛЕНО: Убран ошибочный параметр total. 
-    # В httpx правильное управление таймаутами выглядит именно так:
     timeout = httpx.Timeout(
-        connect=HTTP_CONNECT_TIMEOUT,  # 2.5с из settings.py
-        read=HTTP_READ_TIMEOUT,        # 2.5с из settings.py
-        write=HTTP_WRITE_TIMEOUT,      # 2.5с из settings.py
-        pool=HTTP_POOL_TIMEOUT,        # 1.0с из settings.py
+        connect=HTTP_CONNECT_TIMEOUT,
+        read=HTTP_READ_TIMEOUT,
+        write=HTTP_WRITE_TIMEOUT,
+        pool=HTTP_POOL_TIMEOUT,
     )
     
     start_time = time.monotonic()
     try:
-        # Безопасное отключение проверки SSL-сертификатов для Windows среды
-        ssl_context = httpx.create_ssl_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = False
-
+        # Важно: verify=True (строгая проверка SSL-сертификатов)
+        # Если провайдер или прокси пытается подменить TLS-рукопожатие, тест упадет.
         async with httpx.AsyncClient(
             proxy=proxy_url,
             timeout=timeout,
-            verify=ssl_context,
-            follow_redirects=False,
+            verify=True,
+            follow_redirects=True,
             limits=httpx.Limits(max_connections=1, max_keepalive_connections=0),
         ) as client:
             
-            # 1. Запрос к основному тестовому URL
-            response = await client.get(TEST_URLS)
-            if response.status_code not in (200, 204):
+            # Эмулируем реальный браузер, чтобы сайты не блокировали запросы (ошибка 403)
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5"
+            }
+            
+            # ТЕСТ 1: Загрузка полноценного HTML-документа
+            response = await client.get(TEST_URLS, headers=headers)
+            # Сайт должен вернуть успешный статус или стандартный редирект
+            if response.status_code not in (200, 301, 302):
+                return None
+            
+            # Дополнительный жесткий маркер: проверяем, что вернулся именно HTML-текст, а не 0 байт
+            if not response.text or len(response.text) < 200:
                 return None
                 
-            # 2. Быстрая проверка внешнего IP
-            ip_response = await client.get(IP_CHECK_URL)
+            # ТЕСТ 2: Проверка смены IP-адреса через API
+            ip_response = await client.get(IP_CHECK_URL, headers=headers)
             if ip_response.status_code != 200:
                 return None
                 
             try:
                 ip_data = ip_response.json()
                 external_ip = ip_data.get("ip")
-                if not external_ip:
+                
+                # Валидируем, что это корректный IP (IPv4/IPv6), а не текст ошибки провайдера
+                if not external_ip or not re.match(r"^[0-9a-fA-F.:]+$", external_ip):
                     return None
             except Exception:
                 return None
@@ -484,9 +492,9 @@ async def test_one_proxy(local_port, link, name):
     except asyncio.CancelledError:
         raise
     except Exception:
-        # Сетевые ошибки (ошибки подключения, таймауты прокси) гасим, возвращая None
+        # Гасим все таймауты, TLS-ошибки и сбросы соединений (Connection Reset)
         return None
-
+    
 # ============================================================
 # PROGRESS BAR
 # ============================================================
