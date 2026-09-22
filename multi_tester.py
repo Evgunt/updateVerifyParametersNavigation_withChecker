@@ -191,7 +191,7 @@ def fetch_one_source(url):
         response = httpx.get(url, timeout=15.0, follow_redirects=True)
         if response.status_code != 200:
             return url, [], f"HTTP {response.status_code}"
-        pattern = r"((?:vless|vmess|trojan|ss)://[^\s'\"<>]+)"
+        pattern = r"((?:vless|trojan|ss)://[^\s'\"<>]+)" #vmess
         found_links = re.findall(pattern, response.text, flags=re.IGNORECASE)
         valid_links = []
         for link in found_links:
@@ -199,7 +199,7 @@ def fetch_one_source(url):
             if not link or link.startswith("#"):
                 continue
             link_lower = link.lower()
-            allowed = ("vless://", "ss://", "trojan://", "vmess://")
+            allowed = ("vless://", "ss://", "trojan://") # "vmess://"
             if not link_lower.startswith(allowed):
                 continue
             if any(geo in link_lower for geo in ["russia", "united states", "ukraine"]):
