@@ -12,6 +12,9 @@ from urllib.parse import parse_qs, unquote, urlparse
 import httpx
 from settings import *
 
+# Глобальный список для отслеживания PID дочерних процессов
+RUNNING_PIDS = set()
+
 # ============================================================
 # GIT
 # ============================================================
@@ -78,6 +81,7 @@ def push_to_git():
 def kill_process_tree(proc=None):
     if proc is not None:
         try:
+            RUNNING_PIDS.discard(proc.pid)
             if proc.poll() is None:
                 print(f"[i] Завершение Sing-box PID={proc.pid}...")
                 if os.name == "nt":
@@ -94,32 +98,24 @@ def kill_process_tree(proc=None):
             proc.wait(timeout=5)
         except Exception:
             pass
-    if os.name == "nt":
-        try:
-            subprocess.run(
-                ["taskkill", "/f", "/t", "/im", "sing-box.exe"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=10,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-        except Exception:
-            pass
 
 def kill_old_vpn_processes():
-    print("[*] Очистка старых VPN-процессов...")
-    if os.name != "nt":
+    print("[*] Безопасная очистка запущенных скриптом VPN-процессов...")
+    if not RUNNING_PIDS:
         return
-    for proc_name in ["xray.exe", "sing-box.exe"]:
+    
+    pids_to_kill = list(RUNNING_PIDS)
+    for pid in pids_to_kill:
         try:
-            # shell=True и правильное экранирование флагов принудительно очищают дерево процессов в Windows
-            subprocess.run(
-                f"taskkill /F /T /IM {proc_name}",
-                shell=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=5
-            )
+            if os.name == "nt":
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(pid)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5,
+                    creationflags=subprocess.CREATE_NO_WINDOW
+                )
+            RUNNING_PIDS.discard(pid)
         except Exception:
             pass
 
@@ -137,7 +133,6 @@ def atomic_write_json(filename, data):
         with open(temp_filename, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
             f.flush()
-            os.fsync(f.fileno())
         os.replace(temp_filename, filename)
         return True
     except Exception as e:
@@ -191,15 +186,19 @@ def fetch_one_source(url):
         response = httpx.get(url, timeout=15.0, follow_redirects=True)
         if response.status_code != 200:
             return url, [], f"HTTP {response.status_code}"
-        pattern = r"((?:vless|trojan|ss)://[^\s'\"<>]+)" #vmess
+        
+        # Исправлено: vmess возвращен в регулярное выражение для сбора
+        pattern = r"((?:vless|trojan|ss|vmess)://[^\s'\"<>]+)"
         found_links = re.findall(pattern, response.text, flags=re.IGNORECASE)
         valid_links = []
         for link in found_links:
             link = link.strip()
+            # Исправлено: очистка от возможных остаточных знаков препинания на концах строк
+            link = link.rstrip('.,;)(')
             if not link or link.startswith("#"):
                 continue
             link_lower = link.lower()
-            allowed = ("vless://", "ss://", "trojan://") # "vmess://"
+            allowed = ("vless://", "ss://", "trojan://", "vmess://")
             if not link_lower.startswith(allowed):
                 continue
             if any(geo in link_lower for geo in ["russia", "united states", "ukraine"]):
@@ -438,34 +437,28 @@ async def test_one_proxy(local_port, link, name):
     
     start_time = time.monotonic()
     try:
-        # Важно: verify=True (строгая проверка SSL-сертификатов)
-        # Если провайдер или прокси пытается подменить TLS-рукопожатие, тест упадет.
+        limits = httpx.Limits(max_connections=1, max_keepalive_connections=0)
         async with httpx.AsyncClient(
             proxy=proxy_url,
             timeout=timeout,
             verify=True,
             follow_redirects=True,
-            limits=httpx.Limits(max_connections=1, max_keepalive_connections=0),
+            limits=limits,
         ) as client:
             
-            # Эмулируем реальный браузер, чтобы сайты не блокировали запросы (ошибка 403)
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
                 "Accept-Language": "en-US,en;q=0.5"
             }
             
-            # ТЕСТ 1: Загрузка полноценного HTML-документа
             response = await client.get(TEST_URLS, headers=headers)
-            # Сайт должен вернуть успешный статус или стандартный редирект
             if response.status_code not in (200, 301, 302):
                 return None
             
-            # Дополнительный жесткий маркер: проверяем, что вернулся именно HTML-текст, а не 0 байт
             if not response.text or len(response.text) < 200:
                 return None
                 
-            # ТЕСТ 2: Проверка смены IP-адреса через API
             ip_response = await client.get(IP_CHECK_URL, headers=headers)
             if ip_response.status_code != 200:
                 return None
@@ -474,7 +467,6 @@ async def test_one_proxy(local_port, link, name):
                 ip_data = ip_response.json()
                 external_ip = ip_data.get("ip")
                 
-                # Валидируем, что это корректный IP (IPv4/IPv6), а не текст ошибки провайдера
                 if not external_ip or not re.match(r"^[0-9a-fA-F.:]+$", external_ip):
                     return None
             except Exception:
@@ -492,7 +484,6 @@ async def test_one_proxy(local_port, link, name):
     except asyncio.CancelledError:
         raise
     except Exception:
-        # Гасим все таймауты, TLS-ошибки и сбросы соединений (Connection Reset)
         return None
     
 # ============================================================
@@ -567,35 +558,27 @@ async def test_batch(valid_servers, batch_number, total_batches):
         async with semaphore:
             local_port = LOCAL_PORT_START + index
             try:
-                # Запускаем сам тест напрямую
                 res = await test_one_proxy(local_port, link, data.get("name", "Без имени"))
-                
-                # Обновляем счетчики сразу по факту выполнения конкретного теста
                 completed += 1
                 if res:
                     results.append(res)
                 else:
                     failures += 1
                     
-                # Печатаем прогресс в реальном времени
                 active = total - completed
                 print_progress(completed, total, results, started, active)
                 return res
             except Exception as e:
-                # Если упало что-то на уровне планировщика самого воркера — мы это УВИДИМ
                 print(f"\n[!] Сбой воркера на порту {local_port}: {e}")
                 completed += 1
                 failures += 1
                 return None
 
-    # Создаем явный список задач
     tasks = []
     for index, (link, data) in enumerate(valid_servers):
         tasks.append(worker(index, link, data))
         
     try:
-        # Используем wait_for только поверх общего gather, защищая всю пачку целиком от зависания.
-        # Это исключает ситуации, когда отдельные futures "схлопываются" внутри as_completed.
         await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=BATCH_TIMEOUT)
     except asyncio.TimeoutError:
         print()
@@ -615,20 +598,20 @@ async def test_batch(valid_servers, batch_number, total_batches):
 # ============================================================
 
 def start_singbox():
-    # Можно вернуть скрытие окна (CREATE_NO_WINDOW), если хотите, чтобы всё работало в фоне
     creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-    
     exe_dir = os.path.dirname(os.path.abspath(SINGBOX_PATH))
     
     try:
         proc = subprocess.Popen(
             [os.path.abspath(SINGBOX_PATH), "run", "-c", os.path.abspath(SINGBOX_CONFIG)],
-            stdout=subprocess.DEVNULL, # ИСПРАВЛЕНО: Глушим обычный вывод ядра
-            stderr=subprocess.DEVNULL, # ИСПРАВЛЕНО: Глушим ошибки ядра
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL,
             cwd=exe_dir,   
             creationflags=creationflags,
         )
+        if proc and proc.pid:
+            RUNNING_PIDS.add(proc.pid)
         return proc
     except Exception as e:
         print(f"[-] Не удалось запустить Sing-box: {e}")
@@ -765,8 +748,6 @@ def checkpoint_to_result(item):
 # ============================================================
 
 def save_results(working_configs):
-    # ПРЕДОХРАНИТЕЛЬ: Если список пустой, вообще ничего не делаем,
-    # чтобы не затереть старые конфигурации в файле пустотой.
     if not working_configs:
         print("[-] Найдено 0 рабочих конфигураций. Перезапись файла отменена, старые данные сохранены.")
         return False
@@ -780,7 +761,6 @@ def save_results(working_configs):
                 link = modify_link_for_output(result["link"])
                 f.write(link + "\n")
             f.flush()
-            os.fsync(f.fileno())
         os.replace(temp_file, OUTPUT_FILENAME)
         print(f"[+] ТОП-{len(top_configs)} сохранен в {OUTPUT_FILENAME}")
         return True
@@ -846,6 +826,9 @@ async def run_test_group(servers, label):
     await cleanup_after_batch(proc)
     return results
 
+# ============================================================
+# MAIN
+# ============================================================
 # ============================================================
 # MAIN
 # ============================================================
@@ -946,7 +929,6 @@ async def main_async():
             if results:
                 working_configs.extend(results)
             
-            # Пересобираем уникальные, только если у нас в принципе есть хоть какие-то рабочие конфиги
             if working_configs:
                 unique_results = {}
                 for result in working_configs:
@@ -960,7 +942,6 @@ async def main_async():
                 working_configs = list(unique_results.values())
                 ranked = rank_results(working_configs)
                 
-                # Сохраняем и делаем чекпоинт только при наличии реальных данных
                 save_results(ranked)
                 save_checkpoint(batch_index + 1, total_batches, [result_to_checkpoint(r) for r in ranked], set())
             
@@ -990,7 +971,6 @@ async def main_async():
 # ============================================================
 # ENTRY POINT
 # ============================================================
-
 if __name__ == "__main__":
     try:
         asyncio.run(main_async())
