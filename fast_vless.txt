@@ -1,2 +1,1 @@
-vless://ca59a503-db23-44af-9879-49747d8da98f@test.wecantos.site:20000?security=none&type=raw&packetEncoding=xudp&fp=chrome#%F0%9F%87%A9%F0%9F%87%AADE_184%7C1.1MB%2Fs%7CA004-260618%20%5B49f94e241e48%5D
-vless://3d87029f-b55b-487d-aea6-6049c8668ff1@wifi13.jzxc.digital:443?encryption=none&security=reality&type=tcp&sni=wifi13.jzxc.digital&flow=xtls-rprx-vision&fp=firefox&pbk=UdBGJ1I5lzeteEjn5sLZfVTUcUidtjTx3cF92rPzgGk&sid=3eed9b237e5e5baf#%F0%9F%87%A9%F0%9F%87%AA_%E5%BE%B7%E5%9B%BD_35%20t.me%2Frjsxrd
+vless://3d116251-c919-4cf7-bc61-3a90d91aa80b@154.17.5.16:8443/?type=tcp&encryption=none&flow=xtls-rprx-vision&sni=updates.cdn-apple.com&fp=chrome&security=reality&pbk=ozguNbRK0BghbZv0n6a164gmotQ-EI-VR9iXgGlfuXg&sid=&packetEncoding=xudp#4Mohsen-ff81a19f28
