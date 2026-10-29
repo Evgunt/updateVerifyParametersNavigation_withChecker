@@ -1,1 +1,1 @@
-trojan://3723507166611775488@195.133.93.221:443?security=tls&sni=fitting-ox.boa152.lol&type=tcp&fp=chrome#CY
+vless://ce977d82-824b-4209-87f1-0719f78d6a2e@www.shopify.com:8880?security=none&type=ws&path=/pyip=ProxyIP.JP.CMLiussss.net&host=royal-mode-cf74.210-62d.workers.dev&packetEncoding=xudp&fp=chrome#%E6%9C%AA%E7%9F%A5_102911730
